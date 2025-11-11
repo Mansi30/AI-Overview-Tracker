@@ -252,7 +252,6 @@ Your privacy is our top priority:
 
 ## 🗓️ Roadmap
 
-- [ ] Multi-language support
 - [ ] Export data to CSV/JSON
 - [ ] Browser notifications for tracked queries
 - [ ] Chrome sync for cross-device settings
