@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Overview Tracker</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header class="header">
+      <h1>🤖 AI Overview Tracker</h1>
+      <p class="subtitle">Research Dashboard</p>
+    </header>
+
+    <!-- Loading State -->
+    <div id="loading" class="loading">
+      <div class="spinner"></div>
+      <p>Loading statistics...</p>
+    </div>
+
+    <!-- Main Content -->
+    <div id="content" class="content" style="display: none;">
+      
+      <!-- Statistics Grid -->
+      <div class="stat-grid">
+        <div class="stat-card stat-primary">
+          <div class="stat-icon">🔍</div>
+          <div class="stat-value" id="totalSearches">0</div>
+          <div class="stat-label">Total Searches</div>
+        </div>
+        
+        <div class="stat-card stat-success">
+          <div class="stat-icon">✨</div>
+          <div class="stat-value" id="aiOverviewRate">0%</div>
+          <div class="stat-label">AI Overview Rate</div>
+        </div>
+        
+        <div class="stat-card stat-info">
+          <div class="stat-icon">🔗</div>
+          <div class="stat-value" id="citationsClicked">0</div>
+          <div class="stat-label">Citations Clicked</div>
+        </div>
+        
+        <div class="stat-card stat-warning">
+          <div class="stat-icon">📊</div>
+          <div class="stat-value" id="avgCitations">0</div>
+          <div class="stat-label">Avg Citations</div>
+        </div>
+      </div>
+
+      <!-- Additional Metrics -->
+      <div class="metrics-row">
+        <div class="metric-item">
+          <span class="metric-label">Click-through Rate:</span>
+          <span class="metric-value" id="clickThroughRate">0%</span>
+        </div>
+        <div class="metric-item">
+          <span class="metric-label">Sessions:</span>
+          <span class="metric-value" id="uniqueSessions">0</span>
+        </div>
+      </div>
+
+      <!-- Top Domains Section -->
+      <div class="section">
+        <div class="section-header">
+          <h2 class="section-title">📈 Top Cited Domains</h2>
+        </div>
+        <div id="domainList" class="domain-list">
+          <div class="no-data">No data yet. Start searching on Google!</div>
+        </div>
+      </div>
+
+      <!-- Action Buttons -->
+      <div class="button-group">
+        <button class="btn btn-primary" id="exportBtn">
+          <span class="btn-icon">💾</span>
+          Export Data
+        </button>
+        <button class="btn btn-secondary" id="refreshBtn">
+          <span class="btn-icon">🔄</span>
+          Refresh
+        </button>
+      </div>
+
+      <div class="button-group">
+        <button class="btn btn-outline" id="optionsBtn">
+          <span class="btn-icon">⚙️</span>
+          Settings
+        </button>
+        <button class="btn btn-danger" id="clearBtn">
+          <span class="btn-icon">🗑️</span>
+          Clear Data
+        </button>
+      </div>
+
+      <!-- Footer -->
+      <div class="footer">
+        <p class="footer-text">Tracking only google.com searches</p>
+      </div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
