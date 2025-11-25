@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Overview Tracker - Settings</title>
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header class="header">
+      <div class="header-content">
+        <h1>⚙️ AI Overview Tracker Settings</h1>
+        <p class="subtitle">Configure your tracking preferences</p>
+      </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      
+      <!-- User Account Section -->
+      <section class="settings-section">
+        <h2 class="section-title">👤 User Account</h2>
+        
+        <div class="info-box" id="authStatus">
+          <div id="notAuthenticatedView">
+            <h3 class="info-title">Setup Your Account</h3>
+            <p class="info-text">Create an account to access your personal dashboard and view your search analytics.</p>
+            
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="userEmail">Email Address</label>
+                <p class="setting-description">Your email for login and password recovery</p>
+              </div>
+              <div class="setting-control">
+                <input type="email" id="userEmail" class="text-input" placeholder="your@email.com" required>
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="userPassword">Passcode</label>
+                <p class="setting-description">Choose a secure password (min 6 characters)</p>
+              </div>
+              <div class="setting-control">
+                <input type="password" id="userPassword" class="text-input" placeholder="••••••••" minlength="6" required>
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-info">
+                <label class="setting-label" for="confirmPassword">Confirm Passcode</label>
+                <p class="setting-description">Re-enter your password</p>
+              </div>
+              <div class="setting-control">
+                <input type="password" id="confirmPassword" class="text-input" placeholder="••••••••" minlength="6" required>
+              </div>
+            </div>
+
+            <button class="btn btn-primary" id="createAccountBtn">
+              <span class="btn-icon">🚀</span>
+              Create Account & Setup
+            </button>
+
+            <div style="text-align: center; margin-top: 15px;">
+              <button class="btn btn-secondary" id="loginBtn" style="max-width: 250px; margin-bottom: 10px;">
+                <span class="btn-icon">🔓</span>
+                Login to Existing Account
+              </button>
+              <button class="btn btn-secondary" id="forgotPasswordBtn" style="max-width: 250px;">
+                <span class="btn-icon">🔑</span>
+                Forgot Password?
+              </button>
+            </div>
+          </div>
+
+          <div id="authenticatedView" style="display: none;">
+            <h3 class="info-title">✅ Account Active</h3>
+            <div class="storage-info">
+              <div class="storage-stat">
+                <span class="storage-label">Email:</span>
+                <span class="storage-value" id="displayEmail">-</span>
+              </div>
+              <div class="storage-stat">
+                <span class="storage-label">User ID:</span>
+                <span class="storage-value" id="displayUserId">-</span>
+              </div>
+              <div class="storage-stat">
+                <span class="storage-label">Dashboard Access:</span>
+                <span class="storage-value">
+                  <a href="https://ai-overview-extension-de.web.app" target="_blank" class="footer-link">Open Dashboard →</a>
+                </span>
+              </div>
+            </div>
+            <button class="btn btn-secondary" id="logoutBtn" style="margin-top: 15px;">
+              <span class="btn-icon">🚪</span>
+              Logout
+            </button>
+            <button class="btn btn-secondary" id="deleteAccountBtn" style="margin-top: 10px; background: #ef4444; color: white; border-color: #ef4444;">
+              <span class="btn-icon">🗑️</span>
+              Delete Account & Data
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Tracking Settings -->
+      <section class="settings-section">
+        <h2 class="section-title">🎯 Tracking Settings</h2>
+        
+        <div class="setting-item">
+          <div class="setting-info">
+            <label class="setting-label" for="trackingEnabled">
+              Enable Tracking
+            </label>
+            <p class="setting-description">
+              When enabled, the extension will track AI Overviews and user interactions on Google Search.
+            </p>
+          </div>
+          <div class="setting-control">
+            <label class="toggle">
+              <input type="checkbox" id="trackingEnabled" checked>
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="setting-item">
+          <div class="setting-info">
+            <label class="setting-label" for="includeQueryText">
+              Include Query Text
+            </label>
+            <p class="setting-description">
+              Store the actual search queries in the tracking data. Disable for enhanced privacy.
+            </p>
+          </div>
+          <div class="setting-control">
+            <label class="toggle">
+              <input type="checkbox" id="includeQueryText" checked>
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <!-- Data Management -->
+      <section class="settings-section">
+        <h2 class="section-title">💾 Data Management</h2>
+        
+        <div class="setting-item">
+          <div class="setting-info">
+            <label class="setting-label" for="dataRetentionDays">
+              Data Retention Period
+            </label>
+            <p class="setting-description">
+              Automatically delete data older than the specified number of days.
+            </p>
+          </div>
+          <div class="setting-control">
+            <select id="dataRetentionDays" class="select-input">
+              <option value="7">7 days</option>
+              <option value="30">30 days</option>
+              <option value="60">60 days</option>
+              <option value="90" selected>90 days</option>
+              <option value="180">180 days</option>
+              <option value="365">1 year</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="setting-item">
+          <div class="setting-info">
+            <label class="setting-label">
+              Storage Information
+            </label>
+            <p class="setting-description">
+              Current data storage usage and statistics.
+            </p>
+          </div>
+          <div class="setting-control">
+            <div class="storage-info">
+              <div class="storage-stat">
+                <span class="storage-label">Total Events:</span>
+                <span class="storage-value" id="totalEvents">Loading...</span>
+              </div>
+              <div class="storage-stat">
+                <span class="storage-label">Oldest Event:</span>
+                <span class="storage-value" id="oldestEvent">Loading...</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Privacy & Ethics -->
+      <section class="settings-section">
+        <h2 class="section-title">🔒 Privacy & Ethics</h2>
+        
+        <div class="info-box">
+          <h3 class="info-title">What We Collect</h3>
+          <ul class="info-list">
+            <li>✅ Search queries on Google (if enabled)</li>
+            <li>✅ AI Overview presence and content</li>
+            <li>✅ Cited source URLs and domains</li>
+            <li>✅ Click interactions with citations</li>
+            <li>✅ Timestamps and session IDs</li>
+          </ul>
+        </div>
+
+        <div class="info-box info-warning">
+          <h3 class="info-title">What We DON'T Collect</h3>
+          <ul class="info-list">
+            <li>❌ Personal identifying information</li>
+            <li>❌ Passwords or form data</li>
+            <li>❌ Browsing history outside Google Search</li>
+            <li>❌ Email addresses or account details</li>
+            <li>❌ Any data from other websites</li>
+          </ul>
+        </div>
+
+        <div class="info-box info-success">
+          <h3 class="info-title">Data Storage</h3>
+          <p class="info-text">
+            All data is stored locally on your device using Chrome's storage API. 
+            No data is sent to external servers. You have full control over your data 
+            and can export or delete it at any time.
+          </p>
+        </div>
+      </section>
+
+      <!-- About -->
+      <section class="settings-section">
+        <h2 class="section-title">ℹ️ About</h2>
+        
+        <div class="about-content">
+          <p class="about-text">
+            <strong>AI Overview Tracker</strong> is a research tool designed to understand 
+            how users interact with Google's AI-generated search results. This extension 
+            helps researchers analyze the impact of AI Overviews on search behavior and 
+            information consumption patterns.
+          </p>
+          
+          <div class="about-meta">
+            <div class="meta-item">
+              <span class="meta-label">Version:</span>
+              <span class="meta-value" id="extensionVersion">1.0.0</span>
+            </div>
+            <div class="meta-item">
+              <span class="meta-label">Platform:</span>
+              <span class="meta-value">Google Chrome</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Action Buttons -->
+      <div class="action-bar">
+        <button class="btn btn-primary" id="saveBtn">
+          <span class="btn-icon">💾</span>
+          Save Settings
+        </button>
+        <button class="btn btn-secondary" id="resetBtn">
+          <span class="btn-icon">🔄</span>
+          Reset to Defaults
+        </button>
+      </div>
+
+      <!-- Status Message -->
+      <div id="statusMessage" class="status-message" style="display: none;"></div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <p class="footer-text">
+        Built for research purposes • All data stored locally • 
+        <a href="#" id="privacyLink" class="footer-link">Privacy Policy</a>
+      </p>
+    </footer>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>

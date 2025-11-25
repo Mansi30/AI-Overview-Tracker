@@ -1,0 +1,544 @@
+/**
+ * AI Overview Tracker - Options/Settings Script
+ * Handles settings UI and user preferences
+ */
+
+// ==================== INITIALIZATION ====================
+
+document.addEventListener('DOMContentLoaded', async () => {
+  await loadAuthStatus();
+  await loadSettings();
+  await loadStorageInfo();
+  setupEventListeners();
+  displayVersionInfo();
+});
+
+function setupEventListeners() {
+  document.getElementById('saveBtn').addEventListener('click', saveSettings);
+  document.getElementById('resetBtn').addEventListener('click', resetSettings);
+  document.getElementById('privacyLink').addEventListener('click', showPrivacyPolicy);
+  document.getElementById('createAccountBtn').addEventListener('click', createUserAccount);
+  document.getElementById('loginBtn').addEventListener('click', loginUser);
+  document.getElementById('logoutBtn').addEventListener('click', logoutUser);
+  document.getElementById('forgotPasswordBtn').addEventListener('click', resetPassword);
+  document.getElementById('deleteAccountBtn').addEventListener('click', deleteAccount);
+}
+
+// ==================== AUTHENTICATION ====================
+
+async function loadAuthStatus() {
+  try {
+    const { userEmail, userId } = await chrome.storage.local.get(['userEmail', 'userId']);
+    
+    if (userEmail && userId) {
+      // User is authenticated
+      document.getElementById('notAuthenticatedView').style.display = 'none';
+      document.getElementById('authenticatedView').style.display = 'block';
+      document.getElementById('displayEmail').textContent = userEmail;
+      document.getElementById('displayUserId').textContent = userId.substring(0, 20) + '...';
+    } else {
+      // User is not authenticated
+      document.getElementById('notAuthenticatedView').style.display = 'block';
+      document.getElementById('authenticatedView').style.display = 'none';
+    }
+  } catch (error) {
+    console.error('Failed to load auth status:', error);
+  }
+}
+
+async function createUserAccount() {
+  try {
+    const email = document.getElementById('userEmail').value.trim();
+    const password = document.getElementById('userPassword').value;
+    const confirmPassword = document.getElementById('confirmPassword').value;
+
+    // Validation
+    if (!email || !password || !confirmPassword) {
+      showStatus('Please fill in all fields', 'error');
+      return;
+    }
+
+    if (password.length < 6) {
+      showStatus('Password must be at least 6 characters', 'error');
+      return;
+    }
+
+    if (password !== confirmPassword) {
+      showStatus('Passwords do not match', 'error');
+      return;
+    }
+
+    // Email validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      showStatus('Please enter a valid email address', 'error');
+      return;
+    }
+
+    const button = document.getElementById('createAccountBtn');
+    button.disabled = true;
+    button.innerHTML = '<span class="btn-icon">⏳</span> Creating Account...';
+
+    // Send request to Firebase Auth via dashboard URL
+    const response = await fetch('https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=AIzaSyD86H1nEaHvzwUZt2Y8QbYvai-s3rWKCqw', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: email,
+        password: password,
+        returnSecureToken: true
+      })
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error?.message || 'Account creation failed');
+    }
+
+    // Store user credentials locally using Firebase Auth UID
+    await chrome.storage.local.set({
+      userEmail: email,
+      userAuthToken: data.idToken,
+      userId: data.localId // Use Firebase Auth UID instead of random ID
+    });
+
+    // Create user document in Firestore with role
+    await createUserInFirestore(data.localId, email);
+
+    showStatus('Account created successfully! You can now access the dashboard.', 'success');
+    
+    button.innerHTML = '<span class="btn-icon">✅</span> Account Created!';
+    setTimeout(() => {
+      loadAuthStatus();
+    }, 1500);
+  } catch (error) {
+    console.error('Account creation failed:', error);
+    showStatus(error.message || 'Account creation failed. Email may already be in use.', 'error');
+    
+    const button = document.getElementById('createAccountBtn');
+    button.disabled = false;
+    button.innerHTML = '<span class="btn-icon">🚀</span> Create Account & Setup';
+  }
+}
+
+async function createUserInFirestore(userId, email) {
+  try {
+    const projectId = 'ai-overview-extension-de';
+    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${userId}`;
+    
+    const payload = {
+      fields: {
+        email: { stringValue: email },
+        role: { stringValue: 'user' }, // Regular user role
+        createdAt: { stringValue: new Date().toISOString() },
+        userId: { stringValue: userId }
+      }
+    };
+
+    await fetch(url, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+  } catch (error) {
+    console.error('Failed to create user in Firestore:', error);
+  }
+}
+
+async function loginUser() {
+  try {
+    const email = document.getElementById('userEmail').value.trim();
+    const password = document.getElementById('userPassword').value;
+
+    // Validation
+    if (!email || !password) {
+      showStatus('Please enter email and password', 'error');
+      return;
+    }
+
+    const button = document.getElementById('loginBtn');
+    button.disabled = true;
+    button.innerHTML = '<span class="btn-icon">⏳</span> Logging In...';
+
+    // Sign in with Firebase Auth
+    const response = await fetch('https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=AIzaSyD86H1nEaHvzwUZt2Y8QbYvai-s3rWKCqw', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: email,
+        password: password,
+        returnSecureToken: true
+      })
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error?.message || 'Login failed');
+    }
+
+    // Store user credentials locally using Firebase Auth UID
+    await chrome.storage.local.set({
+      userEmail: email,
+      userAuthToken: data.idToken,
+      userId: data.localId // Use Firebase Auth UID
+    });
+
+    showStatus('Login successful! You can now access the dashboard.', 'success');
+    
+    button.innerHTML = '<span class="btn-icon">✅</span> Logged In!';
+    setTimeout(() => {
+      loadAuthStatus();
+    }, 1500);
+  } catch (error) {
+    console.error('Login failed:', error);
+    showStatus(error.message || 'Login failed. Please check your credentials.', 'error');
+    
+    const button = document.getElementById('loginBtn');
+    button.disabled = false;
+    button.innerHTML = '<span class="btn-icon">🔓</span> Login to Existing Account';
+  }
+}
+
+async function logoutUser() {
+  const confirmed = confirm('Are you sure you want to logout? You will need to login again to access the dashboard.');
+  
+  if (!confirmed) return;
+
+  try {
+    await chrome.storage.local.remove(['userEmail', 'userAuthToken']);
+    showStatus('Logged out successfully', 'success');
+    setTimeout(() => {
+      loadAuthStatus();
+    }, 1000);
+  } catch (error) {
+    console.error('Logout failed:', error);
+    showStatus('Logout failed', 'error');
+  }
+}
+
+async function resetPassword() {
+  const email = prompt('Enter your email address to reset your password:');
+  
+  if (!email) return;
+
+  // Email validation
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(email)) {
+    showStatus('Please enter a valid email address', 'error');
+    return;
+  }
+
+  try {
+    const button = document.getElementById('forgotPasswordBtn');
+    button.disabled = true;
+    button.innerHTML = '<span class="btn-icon">⏳</span> Sending Email...';
+
+    const response = await fetch('https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=AIzaSyD86H1nEaHvzwUZt2Y8QbYvai-s3rWKCqw', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        requestType: 'PASSWORD_RESET',
+        email: email
+      })
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.error?.message || 'Password reset failed');
+    }
+
+    showStatus('Password reset email sent! Check your inbox.', 'success');
+    
+    button.innerHTML = '<span class="btn-icon">✅</span> Email Sent!';
+    setTimeout(() => {
+      button.disabled = false;
+      button.innerHTML = '<span class="btn-icon">🔑</span> Forgot Password?';
+    }, 3000);
+  } catch (error) {
+    console.error('Password reset failed:', error);
+    showStatus(error.message || 'Failed to send password reset email', 'error');
+    
+    const button = document.getElementById('forgotPasswordBtn');
+    button.disabled = false;
+    button.innerHTML = '<span class="btn-icon">🔑</span> Forgot Password?';
+  }
+}
+
+async function deleteAccount() {
+  const confirmed = confirm(
+    '⚠️ WARNING: DELETE ACCOUNT\n\n' +
+    'This will permanently delete:\n' +
+    '• Your account and credentials\n' +
+    '• All your search history and events\n' +
+    '• All analytics data\n' +
+    '• This action CANNOT be undone!\n\n' +
+    'Are you absolutely sure you want to continue?'
+  );
+
+  if (!confirmed) return;
+
+  // Double confirmation
+  const doubleConfirm = confirm(
+    'FINAL CONFIRMATION\n\n' +
+    'This is your last chance to cancel.\n\n' +
+    'Delete everything permanently?'
+  );
+
+  if (!doubleConfirm) return;
+
+  try {
+    const button = document.getElementById('deleteAccountBtn');
+    button.disabled = true;
+    button.innerHTML = '<span class="btn-icon">⏳</span> Deleting...';
+
+    const { userEmail, userAuthToken, userId } = await chrome.storage.local.get(['userEmail', 'userAuthToken', 'userId']);
+
+    if (!userEmail || !userAuthToken || !userId) {
+      throw new Error('No account found to delete');
+    }
+
+    // Delete user from Firebase Auth
+    const authResponse = await fetch('https://identitytoolkit.googleapis.com/v1/accounts:delete?key=AIzaSyD86H1nEaHvzwUZt2Y8QbYvai-s3rWKCqw', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        idToken: userAuthToken
+      })
+    });
+
+    if (!authResponse.ok) {
+      const authData = await authResponse.json();
+      console.warn('Auth deletion failed:', authData.error?.message);
+      // Continue anyway to clean up local data
+    }
+
+    // Delete user document and events from Firestore
+    try {
+      const projectId = 'ai-overview-extension-de';
+      const firestoreUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${userId}`;
+      
+      await fetch(firestoreUrl, {
+        method: 'DELETE'
+      });
+    } catch (firestoreError) {
+      console.warn('Firestore deletion warning:', firestoreError);
+    }
+
+    // Clear all local data
+    await chrome.storage.local.clear();
+    
+    // Reinitialize with default settings
+    await chrome.runtime.sendMessage({ action: 'clearData' });
+
+    showStatus('Account deleted successfully. All data removed.', 'success');
+    
+    button.innerHTML = '<span class="btn-icon">✅</span> Deleted!';
+    
+    // Reload page after 2 seconds
+    setTimeout(() => {
+      window.location.reload();
+    }, 2000);
+
+  } catch (error) {
+    console.error('Account deletion failed:', error);
+    showStatus(error.message || 'Failed to delete account. Please try again.', 'error');
+    
+    const button = document.getElementById('deleteAccountBtn');
+    button.disabled = false;
+    button.innerHTML = '<span class="btn-icon">🗑️</span> Delete Account & Data';
+  }
+}
+
+// ==================== LOAD SETTINGS ====================
+
+async function loadSettings() {
+  try {
+    const settings = await chrome.runtime.sendMessage({ action: 'getSettings' });
+    
+    // Populate form with current settings
+    document.getElementById('trackingEnabled').checked = settings.tracking_enabled !== false;
+    document.getElementById('includeQueryText').checked = settings.include_query_text !== false;
+    document.getElementById('dataRetentionDays').value = settings.data_retention_days || 90;
+  } catch (error) {
+    console.error('Failed to load settings:', error);
+    showStatus('Failed to load settings', 'error');
+  }
+}
+
+async function loadStorageInfo() {
+  try {
+    const data = await chrome.runtime.sendMessage({ action: 'exportData' });
+    const events = data.events || [];
+    
+    // Update total events
+    document.getElementById('totalEvents').textContent = events.length;
+    
+    // Find oldest event
+    if (events.length > 0) {
+      const timestamps = events.map(e => new Date(e.timestamp)).filter(d => !isNaN(d));
+      if (timestamps.length > 0) {
+        const oldest = new Date(Math.min(...timestamps));
+        document.getElementById('oldestEvent').textContent = formatDate(oldest);
+      } else {
+        document.getElementById('oldestEvent').textContent = 'N/A';
+      }
+    } else {
+      document.getElementById('oldestEvent').textContent = 'No data';
+    }
+  } catch (error) {
+    console.error('Failed to load storage info:', error);
+    document.getElementById('totalEvents').textContent = 'Error';
+    document.getElementById('oldestEvent').textContent = 'Error';
+  }
+}
+
+// ==================== SAVE SETTINGS ====================
+
+async function saveSettings() {
+  try {
+    const button = document.getElementById('saveBtn');
+    button.disabled = true;
+    button.innerHTML = '<span class="btn-icon">⏳</span> Saving...';
+
+    // Collect settings from form
+    const settings = {
+      tracking_enabled: document.getElementById('trackingEnabled').checked,
+      include_query_text: document.getElementById('includeQueryText').checked,
+      data_retention_days: parseInt(document.getElementById('dataRetentionDays').value),
+      auto_export: false // Reserved for future use
+    };
+
+    // Save to storage
+    await chrome.runtime.sendMessage({
+      action: 'saveSettings',
+      settings: settings
+    });
+
+    // Show success message
+    showStatus('Settings saved successfully!', 'success');
+    
+    button.innerHTML = '<span class="btn-icon">✅</span> Saved!';
+    setTimeout(() => {
+      button.disabled = false;
+      button.innerHTML = '<span class="btn-icon">💾</span> Save Settings';
+    }, 2000);
+  } catch (error) {
+    console.error('Failed to save settings:', error);
+    showStatus('Failed to save settings', 'error');
+    
+    const button = document.getElementById('saveBtn');
+    button.disabled = false;
+    button.innerHTML = '<span class="btn-icon">💾</span> Save Settings';
+  }
+}
+
+// ==================== RESET SETTINGS ====================
+
+async function resetSettings() {
+  const confirmed = confirm(
+    'Are you sure you want to reset all settings to their default values?\n\n' +
+    'This will not delete your tracked data.'
+  );
+
+  if (!confirmed) return;
+
+  try {
+    const button = document.getElementById('resetBtn');
+    button.disabled = true;
+    button.innerHTML = '<span class="btn-icon">⏳</span> Resetting...';
+
+    // Default settings
+    const defaultSettings = {
+      tracking_enabled: true,
+      auto_export: false,
+      data_retention_days: 90,
+      include_query_text: true
+    };
+
+    // Save defaults
+    await chrome.runtime.sendMessage({
+      action: 'saveSettings',
+      settings: defaultSettings
+    });
+
+    // Reload form
+    await loadSettings();
+
+    showStatus('Settings reset to defaults', 'success');
+    
+    button.innerHTML = '<span class="btn-icon">✅</span> Reset!';
+    setTimeout(() => {
+      button.disabled = false;
+      button.innerHTML = '<span class="btn-icon">🔄</span> Reset to Defaults';
+    }, 2000);
+  } catch (error) {
+    console.error('Failed to reset settings:', error);
+    showStatus('Failed to reset settings', 'error');
+    
+    const button = document.getElementById('resetBtn');
+    button.disabled = false;
+    button.innerHTML = '<span class="btn-icon">🔄</span> Reset to Defaults';
+  }
+}
+
+// ==================== DISPLAY VERSION ====================
+
+function displayVersionInfo() {
+  const manifest = chrome.runtime.getManifest();
+  document.getElementById('extensionVersion').textContent = manifest.version;
+}
+
+// ==================== SHOW STATUS MESSAGE ====================
+
+function showStatus(message, type = 'success') {
+  const statusElement = document.getElementById('statusMessage');
+  statusElement.textContent = message;
+  statusElement.className = `status-message ${type}`;
+  statusElement.style.display = 'block';
+
+  // Auto-hide after 5 seconds
+  setTimeout(() => {
+    statusElement.style.display = 'none';
+  }, 5000);
+}
+
+// ==================== UTILITY FUNCTIONS ====================
+
+function formatDate(date) {
+  const options = { 
+    year: 'numeric', 
+    month: 'short', 
+    day: 'numeric' 
+  };
+  return date.toLocaleDateString(undefined, options);
+}
+
+function showPrivacyPolicy(e) {
+  e.preventDefault();
+  
+  alert(
+    'PRIVACY POLICY\n\n' +
+    'Data Collection:\n' +
+    '• Search queries on Google (if enabled)\n' +
+    '• AI Overview content and citations\n' +
+    '• User click interactions\n' +
+    '• Timestamps and session identifiers\n\n' +
+    'Data Storage:\n' +
+    '• All data is stored locally on your device\n' +
+    '• No data is transmitted to external servers\n' +
+    '• You can export or delete data at any time\n\n' +
+    'Data Usage:\n' +
+    '• Data is used solely for research purposes\n' +
+    '• Helps understand AI Overview engagement\n' +
+    '• Aggregated statistics only, no individual tracking\n\n' +
+    'For more information, contact the extension developer.'
+  );
+}
+
+// ==================== AUTO-REFRESH STORAGE INFO ====================
+
+// Refresh storage info every 30 seconds
+setInterval(loadStorageInfo, 30000);
