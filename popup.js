@@ -14,7 +14,12 @@ function setupEventListeners() {
   document.getElementById('exportBtn').addEventListener('click', exportData);
   document.getElementById('refreshBtn').addEventListener('click', loadStats);
   document.getElementById('optionsBtn').addEventListener('click', openOptions);
-  document.getElementById('clearBtn').addEventListener('click', clearData);
+  document.getElementById('clearBtn').addEventListener('click', showDeleteModal);
+  
+  // Modal event listeners
+  document.getElementById('cancelDeleteBtn').addEventListener('click', hideDeleteModal);
+  document.getElementById('confirmDeleteBtn').addEventListener('click', handleSelectiveDelete);
+  document.getElementById('deleteByDate').addEventListener('change', handleDeleteByDateChange);
 }
 
 // ==================== LOAD STATISTICS ====================
@@ -213,41 +218,67 @@ function formatDate(date) {
   return `${year}-${month}-${day}`;
 }
 
-// ==================== CLEAR DATA ====================
+// ==================== DELETE DATA MODAL ====================
 
-async function clearData() {
-  const confirmed = confirm(
-    'Are you sure you want to clear all tracked data?\n\n' +
-    'This will delete:\n' +
-    '• All search events\n' +
-    '• All statistics\n' +
-    '• Session history\n\n' +
-    'This action cannot be undone.'
-  );
+function showDeleteModal() {
+  document.getElementById('deleteModal').style.display = 'flex';
+}
 
-  if (!confirmed) return;
+function hideDeleteModal() {
+  document.getElementById('deleteModal').style.display = 'none';
+  // Reset checkboxes
+  document.getElementById('deleteByDate').checked = false;
+  document.getElementById('dateRange').disabled = true;
+}
+
+function handleDeleteByDateChange(e) {
+  document.getElementById('dateRange').disabled = !e.target.checked;
+}
+
+async function handleSelectiveDelete() {
+  const deleteByDate = document.getElementById('deleteByDate').checked;
+  const dateRange = parseInt(document.getElementById('dateRange').value);
+
+  // Validation
+  if (!deleteByDate) {
+    alert('Please select the date range option.');
+    return;
+  }
+
+  // Build confirmation message
+  let message = `Are you sure you want to delete data from the past ${dateRange} days?\n\n`;
+  message += 'This action cannot be undone.';
+
+  if (!confirm(message)) return;
 
   try {
-    const button = document.getElementById('clearBtn');
-    button.innerHTML = '<span class="btn-icon">⏳</span> Clearing...';
+    const button = document.getElementById('confirmDeleteBtn');
+    button.innerHTML = '<span class="btn-icon">⏳</span> Deleting...';
     button.disabled = true;
 
-    await chrome.runtime.sendMessage({ action: 'clearData' });
-    
-    // Reload stats
+    // Send delete request to background
+    await chrome.runtime.sendMessage({
+      action: 'selectiveDelete',
+      options: {
+        deleteAll: false,
+        deleteByDate: true,
+        dateRange,
+        deleteSearches: false,
+        deleteClicks: false,
+        deleteStats: false
+      }
+    });
+
+    hideDeleteModal();
     await loadStats();
     
-    button.innerHTML = '<span class="btn-icon">✅</span> Cleared!';
-    setTimeout(() => {
-      button.innerHTML = '<span class="btn-icon">🗑️</span> Clear Data';
-      button.disabled = false;
-    }, 2000);
+    alert('✅ Selected data has been deleted.');
   } catch (error) {
-    console.error('Clear failed:', error);
-    alert('Failed to clear data. Check console for details.');
-    
-    const button = document.getElementById('clearBtn');
-    button.innerHTML = '<span class="btn-icon">🗑️</span> Clear Data';
+    console.error('Delete failed:', error);
+    alert('Failed to delete data. Check console for details.');
+  } finally {
+    const button = document.getElementById('confirmDeleteBtn');
+    button.innerHTML = '<span class="btn-icon">🗑️</span> Delete Selected';
     button.disabled = false;
   }
 }

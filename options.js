@@ -17,11 +17,33 @@ function setupEventListeners() {
   document.getElementById('saveBtn').addEventListener('click', saveSettings);
   document.getElementById('resetBtn').addEventListener('click', resetSettings);
   document.getElementById('privacyLink').addEventListener('click', showPrivacyPolicy);
-  document.getElementById('createAccountBtn').addEventListener('click', createUserAccount);
-  document.getElementById('loginBtn').addEventListener('click', loginUser);
+  document.getElementById('createAccountBtn').addEventListener('click', () => {
+    showConfirmPassword();
+    createUserAccount();
+  });
+  document.getElementById('loginBtn').addEventListener('click', () => {
+    hideConfirmPassword();
+    loginUser();
+  });
   document.getElementById('logoutBtn').addEventListener('click', logoutUser);
   document.getElementById('forgotPasswordBtn').addEventListener('click', resetPassword);
-  document.getElementById('deleteAccountBtn').addEventListener('click', deleteAccount);
+  document.getElementById('manageDataBtn').addEventListener('click', showDataModal);
+  
+  // Modal event listeners
+  document.getElementById('cancelDataDeleteBtn').addEventListener('click', hideDataModal);
+  document.getElementById('confirmDataDeleteBtn').addEventListener('click', handleDataDelete);
+  document.getElementById('deleteByDateOptions').addEventListener('change', handleDeleteByDateOptionsChange);
+}
+
+function showConfirmPassword() {
+  document.getElementById('confirmPasswordSection').style.display = 'flex';
+  document.getElementById('confirmPassword').required = true;
+}
+
+function hideConfirmPassword() {
+  document.getElementById('confirmPasswordSection').style.display = 'none';
+  document.getElementById('confirmPassword').required = false;
+  document.getElementById('confirmPassword').value = '';
 }
 
 // ==================== AUTHENTICATION ====================
@@ -53,8 +75,8 @@ async function createUserAccount() {
     const confirmPassword = document.getElementById('confirmPassword').value;
 
     // Validation
-    if (!email || !password || !confirmPassword) {
-      showStatus('Please fill in all fields', 'error');
+    if (!email || !password) {
+      showStatus('Please enter email and password', 'error');
       return;
     }
 
@@ -63,7 +85,7 @@ async function createUserAccount() {
       return;
     }
 
-    if (password !== confirmPassword) {
+    if (confirmPassword && password !== confirmPassword) {
       showStatus('Passwords do not match', 'error');
       return;
     }
@@ -542,3 +564,71 @@ function showPrivacyPolicy(e) {
 
 // Refresh storage info every 30 seconds
 setInterval(loadStorageInfo, 30000);
+
+// ==================== DATA MANAGEMENT MODAL ====================
+
+function showDataModal() {
+  document.getElementById('dataModal').style.display = 'flex';
+}
+
+function hideDataModal() {
+  document.getElementById('dataModal').style.display = 'none';
+  // Reset checkboxes
+  document.getElementById('deleteByDateOptions').checked = false;
+  document.getElementById('dateRangeOptions').disabled = true;
+}
+
+function handleDeleteByDateOptionsChange(e) {
+  document.getElementById('dateRangeOptions').disabled = !e.target.checked;
+}
+
+async function handleDataDelete() {
+  const deleteByDate = document.getElementById('deleteByDateOptions').checked;
+  const dateRange = parseInt(document.getElementById('dateRangeOptions').value);
+
+  // Validation
+  if (!deleteByDate) {
+    showStatus('Please select the date range option', 'error');
+    return;
+  }
+
+  // Build confirmation message
+  let message = `Are you sure you want to delete data from the past ${dateRange} days?\n\n`;
+  message += '⚠️ This will delete from BOTH:\n';
+  message += '   • Your browser storage\n';
+  message += '   • Cloud dashboard (Firestore)\n\n';
+  message += 'This action is PERMANENT and cannot be undone.';
+
+  if (!confirm(message)) return;
+
+  try {
+    const button = document.getElementById('confirmDataDeleteBtn');
+    button.innerHTML = '<span class="btn-icon">⏳</span> Deleting...';
+    button.disabled = true;
+
+    // Send delete request to background
+    await chrome.runtime.sendMessage({
+      action: 'selectiveDelete',
+      options: {
+        deleteAll: false,
+        deleteByDate: true,
+        dateRange,
+        deleteSearches: false,
+        deleteClicks: false,
+        deleteStats: false
+      }
+    });
+
+    hideDataModal();
+    await loadStorageInfo(); // Refresh storage display
+    
+    showStatus('✅ Selected data has been deleted from browser and cloud.', 'success');
+  } catch (error) {
+    console.error('Delete failed:', error);
+    showStatus('Failed to delete data. Please try again.', 'error');
+  } finally {
+    const button = document.getElementById('confirmDataDeleteBtn');
+    button.innerHTML = '<span class="btn-icon">🗑️</span> Delete Selected';
+    button.disabled = false;
+  }
+}

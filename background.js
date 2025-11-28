@@ -82,6 +82,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
   
+  if (action === 'selectiveDelete') {
+    handleSelectiveDelete(request).then(sendResponse);
+    return true;
+  }
+  
   if (action === 'getSettings') {
     handleGetSettings().then(sendResponse);
     return true;
@@ -104,6 +109,13 @@ async function handleStoreEvent(request) {
   
   if (!eventData) {
     return { success: false, reason: 'no_event_data' };
+  }
+
+  // Check if user is authenticated
+  const { userId, userEmail } = await chrome.storage.local.get(['userId', 'userEmail']);
+  if (!userId || !userEmail) {
+    console.log('⏸️ Event tracking blocked - user not logged in');
+    return { success: false, reason: 'user_not_authenticated' };
   }
 
   const { settings } = await chrome.storage.local.get('settings');
@@ -433,6 +445,174 @@ async function handleClearData() {
   });
   
   return { success: true };
+}
+
+async function handleSelectiveDelete(request) {
+  const options = request.options;
+  const result = await chrome.storage.local.get(['events', 'stats', 'userId', 'userAuthToken']);
+  let events = result.events || [];
+  let stats = result.stats || {
+    total_searches: 0,
+    ai_overview_shown: 0,
+    total_citations_clicked: 0,
+    sessions: [],
+    first_event_date: null,
+    last_event_date: null
+  };
+  
+  const userId = result.userId;
+  const userAuthToken = result.userAuthToken;
+
+  // Only support date-based deletion (LIMITED TO 30 DAYS MAX)
+  if (options.deleteByDate && options.dateRange) {
+    const cutoffDate = new Date();
+    const daysToDelete = Math.min(options.dateRange, 30); // Enforce 30-day maximum
+    cutoffDate.setDate(cutoffDate.getDate() - daysToDelete);
+    
+    // Get events to delete for Firestore (only from the past 30 days)
+    const eventsToDelete = events.filter(event => {
+      const eventDate = new Date(event.timestamp);
+      const now = new Date();
+      const daysSinceEvent = (now - eventDate) / (1000 * 60 * 60 * 24);
+      return eventDate >= cutoffDate && daysSinceEvent <= 30; // Only events within past 30 days
+    });
+    
+    // Remove selected events from local storage
+    events = events.filter(event => {
+      const eventDate = new Date(event.timestamp);
+      const now = new Date();
+      const daysSinceEvent = (now - eventDate) / (1000 * 60 * 60 * 24);
+      return !(eventDate >= cutoffDate && daysSinceEvent <= 30);
+    });
+    
+    // Delete from Firestore
+    if (userId && eventsToDelete.length > 0) {
+      await deleteFirestoreEventsByDate(userId, userAuthToken, cutoffDate);
+    }
+    
+    // Recalculate statistics from remaining events
+    stats = {
+      total_searches: 0,
+      ai_overview_shown: 0,
+      total_citations_clicked: 0,
+      sessions: [],
+      first_event_date: null,
+      last_event_date: null
+    };
+    
+    events.forEach(event => {
+      updateStats(stats, event);
+    });
+  }
+
+  // Save updated data
+  await chrome.storage.local.set({
+    events: events,
+    stats: stats
+  });
+
+  return { success: true, message: 'Selected data deleted from browser and cloud' };
+}
+
+// Helper functions for Firestore deletion
+async function deleteAllFirestoreEvents(userId, authToken) {
+  try {
+    const projectId = 'ai-overview-extension-de';
+    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${userId}/events`;
+    
+    // Get all event IDs
+    const listResponse = await fetch(url, {
+      headers: authToken ? { 'Authorization': `Bearer ${authToken}` } : {}
+    });
+    
+    if (!listResponse.ok) {
+      console.error('Failed to list events for deletion');
+      return;
+    }
+    
+    const data = await listResponse.json();
+    const documents = data.documents || [];
+    
+    // Delete each document
+    for (const doc of documents) {
+      const docPath = doc.name;
+      await fetch(`https://firestore.googleapis.com/v1/${docPath}`, {
+        method: 'DELETE',
+        headers: authToken ? { 'Authorization': `Bearer ${authToken}` } : {}
+      });
+    }
+    
+    console.log(`✅ Deleted ${documents.length} events from Firestore`);
+  } catch (error) {
+    console.error('❌ Firestore deletion error:', error);
+  }
+}
+
+async function deleteFirestoreEventsByDate(userId, authToken, cutoffDate) {
+  try {
+    const projectId = 'ai-overview-extension-de';
+    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${userId}/events`;
+    
+    const listResponse = await fetch(url, {
+      headers: authToken ? { 'Authorization': `Bearer ${authToken}` } : {}
+    });
+    
+    if (!listResponse.ok) return;
+    
+    const data = await listResponse.json();
+    const documents = data.documents || [];
+    
+    let deletedCount = 0;
+    for (const doc of documents) {
+      const timestamp = doc.fields.timestamp?.stringValue;
+      if (timestamp) {
+        const eventDate = new Date(timestamp);
+        if (eventDate < cutoffDate) {
+          await fetch(`https://firestore.googleapis.com/v1/${doc.name}`, {
+            method: 'DELETE',
+            headers: authToken ? { 'Authorization': `Bearer ${authToken}` } : {}
+          });
+          deletedCount++;
+        }
+      }
+    }
+    
+    console.log(`✅ Deleted ${deletedCount} old events from Firestore`);
+  } catch (error) {
+    console.error('❌ Firestore date deletion error:', error);
+  }
+}
+
+async function deleteFirestoreEventsByType(userId, authToken, eventTypes) {
+  try {
+    const projectId = 'ai-overview-extension-de';
+    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${userId}/events`;
+    
+    const listResponse = await fetch(url, {
+      headers: authToken ? { 'Authorization': `Bearer ${authToken}` } : {}
+    });
+    
+    if (!listResponse.ok) return;
+    
+    const data = await listResponse.json();
+    const documents = data.documents || [];
+    
+    let deletedCount = 0;
+    for (const doc of documents) {
+      const eventType = doc.fields.event_type?.stringValue;
+      if (eventType && eventTypes.includes(eventType)) {
+        await fetch(`https://firestore.googleapis.com/v1/${doc.name}`, {
+          method: 'DELETE',
+          headers: authToken ? { 'Authorization': `Bearer ${authToken}` } : {}
+        });
+        deletedCount++;
+      }
+    }
+    
+    console.log(`✅ Deleted ${deletedCount} events of type ${eventTypes.join(', ')} from Firestore`);
+  } catch (error) {
+    console.error('❌ Firestore type deletion error:', error);
+  }
 }
 
 // Settings
