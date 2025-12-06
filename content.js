@@ -260,7 +260,23 @@
 
   // ==================== 🆕 TOPIC CLASSIFICATION ====================
   
-  function determineQueryTopic(query) {
+  async function determineQueryTopic(query) {
+    // Try LLM-based classification first (for multilingual support)
+    try {
+      const response = await chrome.runtime.sendMessage({
+        action: 'classifyTopic',
+        query: query
+      });
+      
+      if (response && response.topic && response.topic !== 'general') {
+        console.log(`🤖 LLM classified "${query}" as: ${response.topic}`);
+        return response.topic;
+      }
+    } catch (error) {
+      console.warn('⚠️ LLM classification failed, falling back to keyword matching:', error);
+    }
+    
+    // Fallback to keyword-based classification (English only)
     const lowerQuery = query.toLowerCase();
     
     // Technology
@@ -337,9 +353,10 @@
     }
   }
 
-  function trackAIOverviewShown(aiOverviewContainer, query) {
+  async function trackAIOverviewShown(aiOverviewContainer, query) {
     const citations = extractCitations(aiOverviewContainer);
     const aiResponseText = extractAIResponseText(aiOverviewContainer);
+    const queryTopic = await determineQueryTopic(query);
     
     const eventData = {
       session_id: CONFIG.SESSION_ID,
@@ -349,7 +366,7 @@
       // Query details
       query: query,
       query_category: categorizeQuery(query),
-      query_topic: determineQueryTopic(query),  // 🆕 TOPIC!
+      query_topic: queryTopic,  // 🆕 TOPIC!
       
       // AI Overview details
       ai_overview_present: true,
@@ -378,7 +395,8 @@
     return citations;
   }
 
-  function trackCitationClick(citationData, query, timeToClick) {
+  async function trackCitationClick(citationData, query, timeToClick) {
+    const queryTopic = await determineQueryTopic(query);
     const eventData = {
       session_id: CONFIG.SESSION_ID,
       timestamp: new Date().toISOString(),
@@ -386,7 +404,7 @@
       
       // Citation details
       query: query,
-      query_topic: determineQueryTopic(query),  // 🆕 TOPIC!
+      query_topic: queryTopic,  // 🆕 TOPIC!
       citation_url: citationData.url,
       citation_domain: citationData.domain,
       citation_position: citationData.position,
@@ -411,7 +429,8 @@
     console.log(`🖱️ Citation clicked: Position ${citationData.position} - ${citationData.domain} (${timeToClick}ms)`);
   }
 
-  function trackSearchWithoutAIOverview(query) {
+  async function trackSearchWithoutAIOverview(query) {
+    const queryTopic = await determineQueryTopic(query);
     const eventData = {
       session_id: CONFIG.SESSION_ID,
       timestamp: new Date().toISOString(),
@@ -419,7 +438,7 @@
       
       query: query,
       query_category: categorizeQuery(query),
-      query_topic: determineQueryTopic(query),  // 🆕 TOPIC!
+      query_topic: queryTopic,  // 🆕 TOPIC!
       ai_overview_present: false,
       
       page_url: window.location.href,
@@ -494,7 +513,7 @@
 
   // ==================== MAIN DETECTION ====================
   
-  function detectAndTrackAIOverviews() {
+  async function detectAndTrackAIOverviews() {
     const query = getSearchQuery();
     
     if (!query) {
@@ -521,14 +540,14 @@
       console.log('🎯 AI OVERVIEW DETECTED ✅');
       CONFIG.AI_OVERVIEW_FOUND = aiOverviewContainer;
       
-      const citations = trackAIOverviewShown(aiOverviewContainer, query);
+      const citations = await trackAIOverviewShown(aiOverviewContainer, query);
       setupClickTracking(aiOverviewContainer, citations, query);
       
       console.log('═══════════════════════════════════════');
     } else {
       console.log('📭 NO AI OVERVIEW ❌');
       CONFIG.AI_OVERVIEW_FOUND = null;
-      trackSearchWithoutAIOverview(query);
+      await trackSearchWithoutAIOverview(query);
       console.log('═══════════════════════════════════════');
     }
   }

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AI Overview Tracker",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "description": "Track user interactions with Google AI Overviews and cited sources for research purposes",
   "author": "Aditya Dubey/SimPPL",
   "permissions": [
@@ -11,7 +11,8 @@
   "host_permissions": [
     "https://www.google.com/*",
     "https://google.com/*",
-    "https://firestore.googleapis.com/*"
+    "https://firestore.googleapis.com/*",
+    "https://us-central1-ai-overview-extension-de.cloudfunctions.net/*"
   ],
   "content_scripts": [
     {

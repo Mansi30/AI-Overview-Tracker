@@ -53,6 +53,63 @@ async function initializeStorage() {
   }
 }
 
+// ==================== LLM TOPIC CLASSIFICATION ====================
+
+// Firebase Cloud Function endpoint (keeps API key secure on backend)
+const CLASSIFY_FUNCTION_URL = 'https://us-central1-ai-overview-extension-de.cloudfunctions.net/classifyTopic';
+
+async function handleClassifyTopic(request) {
+  const query = request.query;
+  
+  if (!query || query.trim().length === 0) {
+    return { topic: 'general' };
+  }
+  
+  try {
+    // Get stored user data (includes Firebase Auth ID token)
+    const userData = await new Promise((resolve) => {
+      chrome.storage.local.get(['userId', 'userAuthToken'], (data) => resolve(data));
+    });
+    
+    if (!userData.userId) {
+      console.warn('⚠️ User not authenticated, using fallback classification');
+      return { topic: 'general' };
+    }
+    
+    if (!userData.userAuthToken) {
+      console.warn('⚠️ No Firebase ID token found, using fallback classification');
+      return { topic: 'general' };
+    }
+    
+    // Call secure Firebase Cloud Function (API key never exposed to client)
+    const response = await fetch(CLASSIFY_FUNCTION_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${userData.userAuthToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ query })
+    });
+    
+    if (!response.ok) {
+      console.error('Firebase function error:', response.status, response.statusText);
+      return { topic: 'general' };
+    }
+    
+    const data = await response.json();
+    
+    if (data.topic) {
+      return { topic: data.topic };
+    } else {
+      return { topic: 'general' };
+    }
+    
+  } catch (error) {
+    console.error('LLM classification error:', error);
+    return { topic: 'general' };
+  }
+}
+
 // Message handler
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (!request || !request.action) {
@@ -94,6 +151,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   
   if (action === 'saveSettings') {
     handleSaveSettings(request).then(sendResponse);
+    return true;
+  }
+  
+  if (action === 'classifyTopic') {
+    handleClassifyTopic(request).then(sendResponse);
     return true;
   }
   
