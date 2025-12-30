@@ -181,14 +181,12 @@
     allLinks.forEach((link) => {
       const href = link.href;
       
+      // Filter out Google domains and invalid URLs
+      const domain = extractDomain(href);
+      const isGoogleDomain = domain && (domain === 'google.com' || domain.endsWith('.google.com'));
+      
       if (href && 
-          !href.includes('google.com/search') && 
-          !href.includes('accounts.google.com') &&
-          !href.includes('support.google.com') &&
-          !href.includes('policies.google.com') &&
-          !href.includes('google.com/intl') &&
-          !href.includes('consent.google.com') &&
-          !href.includes('myaccount.google.com') &&
+          !isGoogleDomain &&
           !href.startsWith('javascript:') &&
           !href.startsWith('#') &&
           !href.startsWith('about:') &&
