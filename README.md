@@ -153,6 +153,7 @@ Click the extension icon to access:
 
 ### File Structure
 
+```
 ai-overview-extension/
 ├── manifest.json # Extension configuration
 ├── background.js # Background service worker
@@ -165,6 +166,7 @@ ai-overview-extension/
 │ ├── icon48.png
 │ └── icon128.png
 └── README.md # This file
+```
 
 text
 
