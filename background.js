@@ -5,6 +5,24 @@
 
 importScripts('schema.js');
 
+const DEFAULT_SEARCH_MODE_PREFERENCE = 'normal';
+const VALID_SEARCH_MODE_PREFERENCES = new Set(['ai', 'no_ai', 'normal']);
+
+function normalizeSearchModePreference(value) {
+  return VALID_SEARCH_MODE_PREFERENCES.has(value)
+    ? value
+    : DEFAULT_SEARCH_MODE_PREFERENCE;
+}
+
+function normalizeRetentionDays(value) {
+  const parsed = parseInt(value, 10);
+  if (!Number.isFinite(parsed)) {
+    return 90;
+  }
+
+  return Math.min(Math.max(parsed, 1), 3650);
+}
+
 // ==================== INSTALLATION & USER ID ====================
 
 chrome.runtime.onInstalled.addListener(async (details) => {
@@ -46,8 +64,17 @@ async function initializeStorage() {
       tracking_enabled: true,
       auto_export: false,
       data_retention_days: 90,
-      include_query_text: true
+      include_query_text: true,
+      search_mode_preference: DEFAULT_SEARCH_MODE_PREFERENCE
     };
+  } else {
+    const normalizedMode = normalizeSearchModePreference(result.settings.search_mode_preference);
+    if (result.settings.search_mode_preference !== normalizedMode) {
+      updates.settings = {
+        ...result.settings,
+        search_mode_preference: normalizedMode
+      };
+    }
   }
   
   if (Object.keys(updates).length > 0) {
@@ -698,24 +725,44 @@ async function deleteFirestoreEventsByType(userId, authToken, eventTypes) {
 // Settings
 async function handleGetSettings() {
   const result = await chrome.storage.local.get('settings');
-  return result.settings || {
+  const defaults = {
     tracking_enabled: true,
     auto_export: false,
     data_retention_days: 90,
-    include_query_text: true
+    include_query_text: true,
+    search_mode_preference: DEFAULT_SEARCH_MODE_PREFERENCE
   };
+
+  const merged = {
+    ...defaults,
+    ...(result.settings || {})
+  };
+
+  merged.search_mode_preference = normalizeSearchModePreference(merged.search_mode_preference);
+  merged.data_retention_days = normalizeRetentionDays(merged.data_retention_days);
+
+  return merged;
 }
 
 async function handleSaveSettings(request) {
   if (!request.settings) {
     return { success: false, error: 'No settings provided' };
   }
+
+  const incoming = request.settings;
+  const normalizedSettings = {
+    tracking_enabled: incoming.tracking_enabled !== false,
+    auto_export: incoming.auto_export === true,
+    data_retention_days: normalizeRetentionDays(incoming.data_retention_days),
+    include_query_text: incoming.include_query_text !== false,
+    search_mode_preference: normalizeSearchModePreference(incoming.search_mode_preference)
+  };
   
   await chrome.storage.local.set({
-    settings: request.settings
+    settings: normalizedSettings
   });
   
-  return { success: true };
+  return { success: true, settings: normalizedSettings };
 }
 
 // Periodic cleanup

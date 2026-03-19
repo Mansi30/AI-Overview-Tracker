@@ -384,6 +384,7 @@ async function loadSettings() {
     document.getElementById('trackingEnabled').checked = settings.tracking_enabled !== false;
     document.getElementById('includeQueryText').checked = settings.include_query_text !== false;
     document.getElementById('dataRetentionDays').value = settings.data_retention_days || 90;
+    document.getElementById('searchModePreference').value = settings.search_mode_preference || 'normal';
   } catch (error) {
     console.error('Failed to load settings:', error);
     showStatus('Failed to load settings', 'error');
@@ -430,6 +431,7 @@ async function saveSettings() {
       tracking_enabled: document.getElementById('trackingEnabled').checked,
       include_query_text: document.getElementById('includeQueryText').checked,
       data_retention_days: parseInt(document.getElementById('dataRetentionDays').value),
+      search_mode_preference: document.getElementById('searchModePreference').value,
       auto_export: false // Reserved for future use
     };
 
@@ -477,7 +479,8 @@ async function resetSettings() {
       tracking_enabled: true,
       auto_export: false,
       data_retention_days: 90,
-      include_query_text: true
+      include_query_text: true,
+      search_mode_preference: 'normal'
     };
 
     // Save defaults

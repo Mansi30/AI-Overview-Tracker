@@ -12,13 +12,23 @@
     DEBOUNCE_DELAY: 1000,
     SESSION_ID: generateSessionId(),
     TRACKED_QUERIES: new Set(),
-    AI_OVERVIEW_FOUND: null
+    AI_OVERVIEW_FOUND: null,
+    MODE_REDIRECT_PENDING: false
   };
 
   const SCHEMA_VERSION =
     globalThis.AIO_SCHEMA && globalThis.AIO_SCHEMA.VERSION
       ? globalThis.AIO_SCHEMA.VERSION
       : '1.0.0';
+
+  const DEFAULT_SEARCH_MODE_PREFERENCE = 'normal';
+  const SEARCH_MODE_TO_UDM = {
+    ai: '50',
+    no_ai: '14'
+  };
+  const MODE_REDIRECT_GUARD_KEY = 'aio_mode_redirect_guard';
+  const MODE_REDIRECT_GUARD_WINDOW_MS = 4000;
+  const MODE_REDIRECT_GUARD_MAX_COUNT = 2;
 
   function generateSessionId() {
     return `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -52,6 +62,137 @@
     } catch (e) {
       return false;
     }
+  }
+
+  function normalizeSearchModePreference(value) {
+    if (value === 'ai' || value === 'no_ai' || value === 'normal') {
+      return value;
+    }
+
+    return DEFAULT_SEARCH_MODE_PREFERENCE;
+  }
+
+  function getModeRedirectGuard() {
+    try {
+      const raw = sessionStorage.getItem(MODE_REDIRECT_GUARD_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function setModeRedirectGuard(targetUrl) {
+    const now = Date.now();
+    const previous = getModeRedirectGuard();
+    const sameTargetRecent =
+      previous &&
+      previous.targetUrl === targetUrl &&
+      now - previous.timestamp < MODE_REDIRECT_GUARD_WINDOW_MS;
+
+    const next = {
+      targetUrl,
+      timestamp: now,
+      count: sameTargetRecent ? previous.count + 1 : 1
+    };
+
+    sessionStorage.setItem(MODE_REDIRECT_GUARD_KEY, JSON.stringify(next));
+  }
+
+  function shouldSkipModeRedirect(targetUrl) {
+    const guard = getModeRedirectGuard();
+    if (!guard) {
+      return false;
+    }
+
+    const now = Date.now();
+    return (
+      guard.targetUrl === targetUrl &&
+      now - guard.timestamp < MODE_REDIRECT_GUARD_WINDOW_MS &&
+      guard.count >= MODE_REDIRECT_GUARD_MAX_COUNT
+    );
+  }
+
+  function clearModeRedirectGuard() {
+    sessionStorage.removeItem(MODE_REDIRECT_GUARD_KEY);
+  }
+
+  function isGoogleSearchURL(url) {
+    try {
+      const parsed = new URL(url);
+      return (
+        (parsed.hostname === 'www.google.com' || parsed.hostname === 'google.com') &&
+        parsed.pathname === '/search'
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  function computePreferredSearchUrl(currentUrl, preference) {
+    if (!isGoogleSearchURL(currentUrl)) {
+      return null;
+    }
+
+    const parsed = new URL(currentUrl);
+    if (!parsed.searchParams.get('q')) {
+      return null;
+    }
+
+    const normalizedPreference = normalizeSearchModePreference(preference);
+    const targetUdm = SEARCH_MODE_TO_UDM[normalizedPreference] || null;
+    const currentUdm = parsed.searchParams.get('udm');
+
+    if (targetUdm) {
+      if (currentUdm === targetUdm) {
+        return null;
+      }
+
+      parsed.searchParams.set('udm', targetUdm);
+      return parsed.toString();
+    }
+
+    if (!currentUdm) {
+      return null;
+    }
+
+    parsed.searchParams.delete('udm');
+    return parsed.toString();
+  }
+
+  async function getSearchModePreference() {
+    if (!isExtensionContextValid()) {
+      return DEFAULT_SEARCH_MODE_PREFERENCE;
+    }
+
+    try {
+      const settings = await chrome.runtime.sendMessage({ action: 'getSettings' });
+      return normalizeSearchModePreference(settings && settings.search_mode_preference);
+    } catch (error) {
+      console.warn('⚠️ Failed to read search mode preference:', error);
+      return DEFAULT_SEARCH_MODE_PREFERENCE;
+    }
+  }
+
+  async function enforceSearchModePreference() {
+    const preference = await getSearchModePreference();
+    const targetUrl = computePreferredSearchUrl(window.location.href, preference);
+
+    if (!targetUrl) {
+      CONFIG.MODE_REDIRECT_PENDING = false;
+      clearModeRedirectGuard();
+      return false;
+    }
+
+    if (shouldSkipModeRedirect(targetUrl)) {
+      console.warn('⚠️ Skipping repeated mode redirect to avoid loop');
+      CONFIG.MODE_REDIRECT_PENDING = false;
+      return false;
+    }
+
+    CONFIG.MODE_REDIRECT_PENDING = true;
+    setModeRedirectGuard(targetUrl);
+    window.location.replace(targetUrl);
+    return true;
   }
 
   // ==================== VISIBILITY CHECK ====================
@@ -520,6 +661,10 @@
   // ==================== MAIN DETECTION ====================
   
   async function detectAndTrackAIOverviews() {
+    if (CONFIG.MODE_REDIRECT_PENDING) {
+      return;
+    }
+
     const query = getSearchQuery();
     
     if (!query) {
@@ -563,6 +708,10 @@
   let detectionTimeout;
   
   function scheduleDetection() {
+    if (CONFIG.MODE_REDIRECT_PENDING) {
+      return;
+    }
+
     clearTimeout(detectionTimeout);
     detectionTimeout = setTimeout(detectAndTrackAIOverviews, 2000);
   }
@@ -593,8 +742,12 @@
         
         CONFIG.TRACKED_QUERIES.clear();
         CONFIG.AI_OVERVIEW_FOUND = null;
-        
-        scheduleDetection();
+
+        enforceSearchModePreference().then((redirected) => {
+          if (!redirected) {
+            scheduleDetection();
+          }
+        });
       }
     });
 
@@ -614,9 +767,19 @@
     console.log('═══════════════════════════════════════');
     
     if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', scheduleDetection);
+      document.addEventListener('DOMContentLoaded', () => {
+        enforceSearchModePreference().then((redirected) => {
+          if (!redirected) {
+            scheduleDetection();
+          }
+        });
+      });
     } else {
-      scheduleDetection();
+      enforceSearchModePreference().then((redirected) => {
+        if (!redirected) {
+          scheduleDetection();
+        }
+      });
     }
 
     observeDOMChanges();

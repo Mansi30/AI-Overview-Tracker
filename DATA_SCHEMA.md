@@ -277,9 +277,16 @@ Field semantics:
   "tracking_enabled": true,
   "auto_export": false,
   "data_retention_days": 90,
-  "include_query_text": true
+  "include_query_text": true,
+  "search_mode_preference": "normal"
 }
 ```
+
+`search_mode_preference` accepted values:
+
+- `ai`: Opens Google AI mode (`udm=50`) for searches.
+- `no_ai`: Opens Google Web mode (`udm=14`) to avoid AI mode.
+- `normal`: Opens Google All mode (no `udm` override).
 
 ## 7) Notes
 
