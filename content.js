@@ -21,11 +21,8 @@
       ? globalThis.AIO_SCHEMA.VERSION
       : '1.0.0';
 
-  const DEFAULT_SEARCH_MODE_PREFERENCE = 'normal';
-  const SEARCH_MODE_TO_UDM = {
-    ai: '50',
-    no_ai: '14'
-  };
+  const DEFAULT_SEARCH_MODE_PREFERENCE = 'all';
+  const RANDOM_MODE_UDM_VALUES = ['50', '14'];
   const MODE_REDIRECT_GUARD_KEY = 'aio_mode_redirect_guard';
   const MODE_REDIRECT_GUARD_WINDOW_MS = 4000;
   const MODE_REDIRECT_GUARD_MAX_COUNT = 2;
@@ -65,11 +62,21 @@
   }
 
   function normalizeSearchModePreference(value) {
-    if (value === 'ai' || value === 'no_ai' || value === 'normal') {
-      return value;
+    if (value === 'random') {
+      return 'random';
+    }
+
+    // Keep old saved values compatible with the new "all/random" model.
+    if (value === 'all' || value === 'normal' || value === 'ai' || value === 'no_ai') {
+      return 'all';
     }
 
     return DEFAULT_SEARCH_MODE_PREFERENCE;
+  }
+
+  function selectRandomSearchModeUdm() {
+    const index = Math.floor(Math.random() * RANDOM_MODE_UDM_VALUES.length);
+    return RANDOM_MODE_UDM_VALUES[index];
   }
 
   function getModeRedirectGuard() {
@@ -139,15 +146,14 @@
     }
 
     const normalizedPreference = normalizeSearchModePreference(preference);
-    const targetUdm = SEARCH_MODE_TO_UDM[normalizedPreference] || null;
     const currentUdm = parsed.searchParams.get('udm');
 
-    if (targetUdm) {
-      if (currentUdm === targetUdm) {
+    if (normalizedPreference === 'random') {
+      if (RANDOM_MODE_UDM_VALUES.includes(currentUdm)) {
         return null;
       }
 
-      parsed.searchParams.set('udm', targetUdm);
+      parsed.searchParams.set('udm', selectRandomSearchModeUdm());
       return parsed.toString();
     }
 

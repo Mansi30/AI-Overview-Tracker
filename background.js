@@ -5,13 +5,20 @@
 
 importScripts('schema.js');
 
-const DEFAULT_SEARCH_MODE_PREFERENCE = 'normal';
-const VALID_SEARCH_MODE_PREFERENCES = new Set(['ai', 'no_ai', 'normal']);
+const DEFAULT_SEARCH_MODE_PREFERENCE = 'all';
+const VALID_SEARCH_MODE_PREFERENCES = new Set(['all', 'random', 'normal', 'ai', 'no_ai']);
 
 function normalizeSearchModePreference(value) {
-  return VALID_SEARCH_MODE_PREFERENCES.has(value)
-    ? value
-    : DEFAULT_SEARCH_MODE_PREFERENCE;
+  if (!VALID_SEARCH_MODE_PREFERENCES.has(value)) {
+    return DEFAULT_SEARCH_MODE_PREFERENCE;
+  }
+
+  // Legacy modes map to the new "all" option.
+  if (value === 'normal' || value === 'ai' || value === 'no_ai') {
+    return 'all';
+  }
+
+  return value;
 }
 
 function normalizeRetentionDays(value) {

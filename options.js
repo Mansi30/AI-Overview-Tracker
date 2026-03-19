@@ -13,6 +13,21 @@ document.addEventListener('DOMContentLoaded', async () => {
   displayVersionInfo();
 });
 
+const DEFAULT_SEARCH_MODE_PREFERENCE = 'all';
+
+function normalizeSearchModePreference(value) {
+  if (value === 'random') {
+    return 'random';
+  }
+
+  // Keep old saved values compatible with new two-option UI.
+  if (value === 'normal' || value === 'ai' || value === 'no_ai' || value === 'all') {
+    return 'all';
+  }
+
+  return DEFAULT_SEARCH_MODE_PREFERENCE;
+}
+
 function setupEventListeners() {
   document.getElementById('saveBtn').addEventListener('click', saveSettings);
   document.getElementById('resetBtn').addEventListener('click', resetSettings);
@@ -384,7 +399,7 @@ async function loadSettings() {
     document.getElementById('trackingEnabled').checked = settings.tracking_enabled !== false;
     document.getElementById('includeQueryText').checked = settings.include_query_text !== false;
     document.getElementById('dataRetentionDays').value = settings.data_retention_days || 90;
-    document.getElementById('searchModePreference').value = settings.search_mode_preference || 'normal';
+    document.getElementById('searchModePreference').value = normalizeSearchModePreference(settings.search_mode_preference);
   } catch (error) {
     console.error('Failed to load settings:', error);
     showStatus('Failed to load settings', 'error');
@@ -431,7 +446,7 @@ async function saveSettings() {
       tracking_enabled: document.getElementById('trackingEnabled').checked,
       include_query_text: document.getElementById('includeQueryText').checked,
       data_retention_days: parseInt(document.getElementById('dataRetentionDays').value),
-      search_mode_preference: document.getElementById('searchModePreference').value,
+      search_mode_preference: normalizeSearchModePreference(document.getElementById('searchModePreference').value),
       auto_export: false // Reserved for future use
     };
 
@@ -480,7 +495,7 @@ async function resetSettings() {
       auto_export: false,
       data_retention_days: 90,
       include_query_text: true,
-      search_mode_preference: 'normal'
+      search_mode_preference: DEFAULT_SEARCH_MODE_PREFERENCE
     };
 
     // Save defaults
