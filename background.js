@@ -13,8 +13,8 @@ function normalizeSearchModePreference(value) {
     return DEFAULT_SEARCH_MODE_PREFERENCE;
   }
 
-  // Legacy modes map to the new "all" option.
-  if (value === 'normal' || value === 'ai' || value === 'no_ai') {
+  // Legacy "normal" maps to the new "all" option.
+  if (value === 'normal') {
     return 'all';
   }
 

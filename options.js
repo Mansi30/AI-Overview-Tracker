@@ -16,12 +16,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 const DEFAULT_SEARCH_MODE_PREFERENCE = 'all';
 
 function normalizeSearchModePreference(value) {
-  if (value === 'random') {
-    return 'random';
+  if (value === 'all' || value === 'random' || value === 'ai' || value === 'no_ai') {
+    return value;
   }
 
-  // Keep old saved values compatible with new two-option UI.
-  if (value === 'normal' || value === 'ai' || value === 'no_ai' || value === 'all') {
+  // Keep old saved values compatible.
+  if (value === 'normal') {
     return 'all';
   }
 
