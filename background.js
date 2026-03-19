@@ -3,6 +3,8 @@
  * Stores data locally - Dashboard pulls from Firestore
  */
 
+importScripts('schema.js');
+
 // ==================== INSTALLATION & USER ID ====================
 
 chrome.runtime.onInstalled.addListener(async (details) => {
@@ -56,7 +58,7 @@ async function initializeStorage() {
 // ==================== LLM TOPIC CLASSIFICATION ====================
 
 // Firebase Cloud Function endpoint (keeps API key secure on backend)
-const CLASSIFY_FUNCTION_URL = 'https://us-central1-ai-overview-extension-de.cloudfunctions.net/classifyTopic';
+const CLASSIFY_FUNCTION_URL = 'https://us-central1-ai-product-dev-e7da9.cloudfunctions.net/classifyTopic';
 
 async function handleClassifyTopic(request) {
   const query = request.query;
@@ -200,6 +202,22 @@ async function handleStoreEvent(request) {
     eventData.timestamp = new Date().toISOString();
   }
 
+  if (!eventData.schema_version && globalThis.AIO_SCHEMA && globalThis.AIO_SCHEMA.VERSION) {
+    eventData.schema_version = globalThis.AIO_SCHEMA.VERSION;
+  }
+
+  if (globalThis.AIO_SCHEMA && typeof globalThis.AIO_SCHEMA.validateEventDocument === 'function') {
+    const validation = globalThis.AIO_SCHEMA.validateEventDocument(eventData);
+    if (!validation.valid) {
+      console.warn('❌ Event rejected by schema validation:', validation.errors);
+      return {
+        success: false,
+        reason: 'invalid_event_schema',
+        errors: validation.errors
+      };
+    }
+  }
+
   events.push(eventData);
   updateStats(stats, eventData);
 
@@ -229,7 +247,7 @@ async function handleStoreEvent(request) {
 
 async function syncToFirestore(eventData) {
   try {
-    const projectId = 'ai-overview-extension-de';
+    const projectId = 'ai-product-dev-e7da9';
     
     // Get userId from authentication (Firebase Auth UID)
     const { userId, userEmail } = await chrome.storage.local.get(['userId', 'userEmail']);
@@ -579,7 +597,7 @@ async function handleSelectiveDelete(request) {
 // Helper functions for Firestore deletion
 async function deleteAllFirestoreEvents(userId, authToken) {
   try {
-    const projectId = 'ai-overview-extension-de';
+    const projectId = 'ai-product-dev-e7da9';
     const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${userId}/events`;
     
     // Get all event IDs
@@ -612,7 +630,7 @@ async function deleteAllFirestoreEvents(userId, authToken) {
 
 async function deleteFirestoreEventsByDate(userId, authToken, cutoffDate) {
   try {
-    const projectId = 'ai-overview-extension-de';
+    const projectId = 'ai-product-dev-e7da9';
     const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${userId}/events`;
     
     const listResponse = await fetch(url, {
@@ -647,7 +665,7 @@ async function deleteFirestoreEventsByDate(userId, authToken, cutoffDate) {
 
 async function deleteFirestoreEventsByType(userId, authToken, eventTypes) {
   try {
-    const projectId = 'ai-overview-extension-de';
+    const projectId = 'ai-product-dev-e7da9';
     const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${userId}/events`;
     
     const listResponse = await fetch(url, {
