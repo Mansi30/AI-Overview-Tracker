@@ -30,6 +30,8 @@
   const MODE_REDIRECT_GUARD_KEY = 'aio_mode_redirect_guard';
   const MODE_REDIRECT_GUARD_WINDOW_MS = 4000;
   const MODE_REDIRECT_GUARD_MAX_COUNT = 2;
+  const MODE_ENFORCED_QUERIES_KEY = 'aio_mode_enforced_queries';
+  const MODE_ENFORCED_QUERIES_MAX_ENTRIES = 50;
 
   function generateSessionId() {
     return `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -131,6 +133,55 @@
     sessionStorage.removeItem(MODE_REDIRECT_GUARD_KEY);
   }
 
+  function getModeEnforcedQueries() {
+    try {
+      const raw = sessionStorage.getItem(MODE_ENFORCED_QUERIES_KEY);
+      const parsed = raw ? JSON.parse(raw) : {};
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function saveModeEnforcedQueries(state) {
+    try {
+      sessionStorage.setItem(MODE_ENFORCED_QUERIES_KEY, JSON.stringify(state));
+    } catch {
+      // Ignore sessionStorage quota errors.
+    }
+  }
+
+  function hasHandledQueryPreference(query, preference) {
+    if (!query) {
+      return false;
+    }
+
+    const state = getModeEnforcedQueries();
+    return Boolean(state[`${preference}::${query}`]);
+  }
+
+  function markQueryPreferenceHandled(query, preference) {
+    if (!query) {
+      return;
+    }
+
+    const state = getModeEnforcedQueries();
+    const key = `${preference}::${query}`;
+    state[key] = Date.now();
+
+    const entries = Object.entries(state);
+    if (entries.length > MODE_ENFORCED_QUERIES_MAX_ENTRIES) {
+      entries
+        .sort((a, b) => Number(a[1]) - Number(b[1]))
+        .slice(0, entries.length - MODE_ENFORCED_QUERIES_MAX_ENTRIES)
+        .forEach(([entryKey]) => {
+          delete state[entryKey];
+        });
+    }
+
+    saveModeEnforcedQueries(state);
+  }
+
   function isGoogleSearchURL(url) {
     try {
       const parsed = new URL(url);
@@ -199,7 +250,17 @@
 
   async function enforceSearchModePreference() {
     const preference = await getSearchModePreference();
+    const query = getSearchQuery();
+
+    // Apply opening mode once per query so users can switch tabs manually after load.
+    if (hasHandledQueryPreference(query, preference)) {
+      CONFIG.MODE_REDIRECT_PENDING = false;
+      clearModeRedirectGuard();
+      return false;
+    }
+
     const targetUrl = computePreferredSearchUrl(window.location.href, preference);
+    markQueryPreferenceHandled(query, preference);
 
     if (!targetUrl) {
       CONFIG.MODE_REDIRECT_PENDING = false;
