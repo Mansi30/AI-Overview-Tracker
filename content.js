@@ -483,15 +483,66 @@
           link.removeEventListener('click', link._aiClickHandler);
         }
         
-        link._aiClickHandler = (e) => {
+        link._aiClickHandler = async (e) => {
+          const href = citation.url;
           const timeToClick = Date.now() - overviewDetectionTime;
-          trackCitationClick(citation, query, timeToClick);
+
+          // Detect modifier keys / middle click / explicit target to decide navigation
+          const wantsNewTab = e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1 || (link.target && link.target === '_blank');
+
+          try {
+            // Prevent default navigation so we can ensure the tracking message is sent
+            if (e && typeof e.preventDefault === 'function') e.preventDefault();
+
+            // Await tracking to increase chance it reaches the extension before navigation
+            await trackCitationClick(citation, query, timeToClick);
+
+            // Mark citation as clicked in the in-memory data so UI updates immediately
+            try {
+              citation.clicked = true;
+              citation.click_timestamp = new Date().toISOString();
+              citation.time_to_click_ms = timeToClick;
+
+              // Annotate the DOM so users see immediate feedback
+              link.setAttribute('data-ai-citation-clicked', 'true');
+              link.classList.add('ai-citation-clicked');
+
+              // Add a small badge after the link if not already present
+              const nextEl = link.nextElementSibling;
+              if (!nextEl || !nextEl.classList || !nextEl.classList.contains('ai-clicked-badge')) {
+                const badge = document.createElement('span');
+                badge.className = 'ai-clicked-badge';
+                badge.style.marginLeft = '8px';
+                badge.style.color = '#16a34a';
+                badge.style.fontSize = '12px';
+                badge.style.fontWeight = '600';
+                badge.textContent = '✓ clicked';
+                if (link.parentNode) link.parentNode.insertBefore(badge, link.nextSibling);
+              }
+            } catch (err) {
+              // Non-fatal UI update failure
+              console.warn('Could not mark citation clicked in DOM:', err);
+            }
+
+            // Perform navigation after tracking completes
+            if (wantsNewTab) {
+              window.open(href, '_blank', 'noopener,noreferrer');
+            } else {
+              window.location.href = href;
+            }
+          } catch (err) {
+            // If tracking fails or throws, fall back to default navigation behavior
+            console.warn('⚠️ click tracking failed, navigating anyway', err);
+            if (wantsNewTab) {
+              window.open(href, '_blank', 'noopener,noreferrer');
+            } else {
+              window.location.href = href;
+            }
+          }
         };
-        
-        link.addEventListener('click', link._aiClickHandler, { 
-          passive: true, 
-          capture: true 
-        });
+
+        // Use non-passive handler so we can call preventDefault() when needed
+        link.addEventListener('click', link._aiClickHandler, { passive: false, capture: true });
       }
     });
   }
@@ -593,6 +644,37 @@
     urlObserver.observe(document, { subtree: true, childList: true });
   }
 
+  // Inject lightweight styles for clicked citation UI feedback
+  function injectCitationStyles() {
+    try {
+      if (document.getElementById('ai-overview-citation-styles')) return;
+      const style = document.createElement('style');
+      style.id = 'ai-overview-citation-styles';
+      style.textContent = `
+        .ai-citation-clicked {
+          box-shadow: 0 0 0 3px rgba(34,197,94,0.08) inset;
+          border-bottom: 2px dotted rgba(34,197,94,0.25);
+          transition: box-shadow 160ms ease-in-out, border-color 120ms ease-in-out;
+        }
+        .ai-clicked-badge {
+          display: inline-block;
+          background: #ecfdf5;
+          color: #065f46;
+          padding: 2px 6px;
+          border-radius: 9999px;
+          font-size: 12px;
+          font-weight: 600;
+          margin-left: 8px;
+          vertical-align: middle;
+          box-shadow: 0 1px 0 rgba(2,6,23,0.04);
+        }
+      `;
+      (document.head || document.documentElement).appendChild(style);
+    } catch (err) {
+      console.warn('Could not inject citation styles:', err);
+    }
+  }
+
   // ==================== INIT ====================
   
   function init() {
@@ -613,6 +695,7 @@
 
     observeDOMChanges();
     observeURLChanges();
+  injectCitationStyles();
     
     window.addEventListener('beforeunload', cleanup);
   }
