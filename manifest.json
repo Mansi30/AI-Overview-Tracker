@@ -20,7 +20,7 @@
         "https://www.google.com/search*",
         "https://google.com/search*"
       ],
-      "js": ["schema.js", "content.js"],
+      "js": ["content.js"],
       "run_at": "document_idle",
       "all_frames": false
     }

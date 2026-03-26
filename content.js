@@ -16,11 +16,6 @@
     MODE_REDIRECT_PENDING: false
   };
 
-  const SCHEMA_VERSION =
-    globalThis.AIO_SCHEMA && globalThis.AIO_SCHEMA.VERSION
-      ? globalThis.AIO_SCHEMA.VERSION
-      : '1.0.0';
-
   const DEFAULT_SEARCH_MODE_PREFERENCE = 'all';
   const SEARCH_MODE_TO_UDM = {
     ai: '50',
@@ -590,7 +585,6 @@
     const eventData = {
       session_id: CONFIG.SESSION_ID,
       timestamp: new Date().toISOString(),
-      schema_version: SCHEMA_VERSION,
       event_type: 'ai_overview_shown',
       
       // Query details
@@ -630,7 +624,6 @@
     const eventData = {
       session_id: CONFIG.SESSION_ID,
       timestamp: new Date().toISOString(),
-      schema_version: SCHEMA_VERSION,
       event_type: 'citation_clicked',
       
       // Citation details
@@ -665,7 +658,6 @@
     const eventData = {
       session_id: CONFIG.SESSION_ID,
       timestamp: new Date().toISOString(),
-      schema_version: SCHEMA_VERSION,
       event_type: 'search_without_ai_overview',
       
       query: query,

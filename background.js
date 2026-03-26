@@ -3,8 +3,6 @@
  * Stores data locally - Dashboard pulls from Firestore
  */
 
-importScripts('schema.js');
-
 const DEFAULT_SEARCH_MODE_PREFERENCE = 'all';
 const VALID_SEARCH_MODE_PREFERENCES = new Set(['all', 'random', 'normal', 'ai', 'no_ai']);
 
@@ -234,22 +232,6 @@ async function handleStoreEvent(request) {
 
   if (!eventData.timestamp) {
     eventData.timestamp = new Date().toISOString();
-  }
-
-  if (!eventData.schema_version && globalThis.AIO_SCHEMA && globalThis.AIO_SCHEMA.VERSION) {
-    eventData.schema_version = globalThis.AIO_SCHEMA.VERSION;
-  }
-
-  if (globalThis.AIO_SCHEMA && typeof globalThis.AIO_SCHEMA.validateEventDocument === 'function') {
-    const validation = globalThis.AIO_SCHEMA.validateEventDocument(eventData);
-    if (!validation.valid) {
-      console.warn('❌ Event rejected by schema validation:', validation.errors);
-      return {
-        success: false,
-        reason: 'invalid_event_schema',
-        errors: validation.errors
-      };
-    }
   }
 
   events.push(eventData);
