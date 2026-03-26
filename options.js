@@ -102,7 +102,7 @@ async function createUserAccount() {
     button.innerHTML = '<span class="btn-icon">⏳</span> Creating Account...';
 
     // Send request to Firebase Auth via dashboard URL
-    const response = await fetch('https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=AIzaSyD86H1nEaHvzwUZt2Y8QbYvai-s3rWKCqw', {
+    const response = await fetch('https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=AIzaSyDBOKEynotV7RKB2HMEldT9igso7WeBtMY', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -122,11 +122,12 @@ async function createUserAccount() {
     await chrome.storage.local.set({
       userEmail: email,
       userAuthToken: data.idToken,
+      userRefreshToken: data.refreshToken,
       userId: data.localId // Use Firebase Auth UID instead of random ID
     });
 
-    // Create user document in Firestore with role
-    await createUserInFirestore(data.localId, email);
+    // Create user document in Firestore with role (include idToken to satisfy rules)
+    await createUserInFirestore(data.localId, email, data.idToken);
 
     showStatus('Account created successfully! You can now access the dashboard.', 'success');
     
@@ -146,7 +147,7 @@ async function createUserAccount() {
 
 async function createUserInFirestore(userId, email) {
   try {
-    const projectId = 'ai-overview-extension-de';
+    const projectId = 'ai-overview-tracker-dev';
     const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${userId}`;
     
     const payload = {
@@ -184,7 +185,7 @@ async function loginUser() {
     button.innerHTML = '<span class="btn-icon">⏳</span> Logging In...';
 
     // Sign in with Firebase Auth
-    const response = await fetch('https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=AIzaSyD86H1nEaHvzwUZt2Y8QbYvai-s3rWKCqw', {
+    const response = await fetch('https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=AIzaSyDBOKEynotV7RKB2HMEldT9igso7WeBtMY', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -204,6 +205,7 @@ async function loginUser() {
     await chrome.storage.local.set({
       userEmail: email,
       userAuthToken: data.idToken,
+      userRefreshToken: data.refreshToken,
       userId: data.localId // Use Firebase Auth UID
     });
 
@@ -257,7 +259,7 @@ async function resetPassword() {
     button.disabled = true;
     button.innerHTML = '<span class="btn-icon">⏳</span> Sending Email...';
 
-    const response = await fetch('https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=AIzaSyD86H1nEaHvzwUZt2Y8QbYvai-s3rWKCqw', {
+    const response = await fetch('https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=AIzaSyDBOKEynotV7RKB2HMEldT9igso7WeBtMY', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -323,7 +325,7 @@ async function deleteAccount() {
     }
 
     // Delete user from Firebase Auth
-    const authResponse = await fetch('https://identitytoolkit.googleapis.com/v1/accounts:delete?key=AIzaSyD86H1nEaHvzwUZt2Y8QbYvai-s3rWKCqw', {
+    const authResponse = await fetch('https://identitytoolkit.googleapis.com/v1/accounts:delete?key=AIzaSyDBOKEynotV7RKB2HMEldT9igso7WeBtMY', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -339,7 +341,7 @@ async function deleteAccount() {
 
     // Delete user document and events from Firestore
     try {
-      const projectId = 'ai-overview-extension-de';
+      const projectId = 'ai-overview-tracker-dev';
       const firestoreUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${userId}`;
       
       await fetch(firestoreUrl, {
