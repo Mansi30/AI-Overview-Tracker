@@ -3,6 +3,23 @@
  * Stores data locally - Dashboard pulls from Firestore
  */
 
+try {
+  importScripts('env.js');
+} catch (error) {
+  console.warn('env.js not found; Firebase-backed features may be unavailable.');
+}
+
+const ENV = globalThis.AIO_ENV || {};
+const FIREBASE_PROJECT_ID = typeof ENV.FIREBASE_PROJECT_ID === 'string' ? ENV.FIREBASE_PROJECT_ID.trim() : '';
+const FIREBASE_REGION = typeof ENV.FIREBASE_REGION === 'string' && ENV.FIREBASE_REGION.trim() ? ENV.FIREBASE_REGION.trim() : 'us-central1';
+const CLASSIFY_FUNCTION_NAME = typeof ENV.CLASSIFY_FUNCTION_NAME === 'string' && ENV.CLASSIFY_FUNCTION_NAME.trim() ? ENV.CLASSIFY_FUNCTION_NAME.trim() : 'classifyTopic';
+const CLASSIFY_FUNCTION_URL = FIREBASE_PROJECT_ID
+  ? `https://${FIREBASE_REGION}-${FIREBASE_PROJECT_ID}.cloudfunctions.net/${CLASSIFY_FUNCTION_NAME}`
+  : '';
+const FIRESTORE_BASE_URL = FIREBASE_PROJECT_ID
+  ? `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/(default)/documents`
+  : '';
+
 const DEFAULT_SEARCH_MODE_PREFERENCE = 'all';
 const VALID_SEARCH_MODE_PREFERENCES = new Set(['all', 'random', 'normal', 'ai', 'no_ai']);
 
@@ -89,9 +106,6 @@ async function initializeStorage() {
 
 // ==================== LLM TOPIC CLASSIFICATION ====================
 
-// Firebase Cloud Function endpoint (keeps API key secure on backend)
-const CLASSIFY_FUNCTION_URL = 'https://us-central1-ai-product-dev-e7da9.cloudfunctions.net/classifyTopic';
-
 async function handleClassifyTopic(request) {
   const query = request.query;
   
@@ -115,6 +129,11 @@ async function handleClassifyTopic(request) {
       return { topic: 'general' };
     }
     
+    if (!CLASSIFY_FUNCTION_URL) {
+      console.warn('⚠️ Missing Firebase env config for topic classification');
+      return { topic: 'general' };
+    }
+
     // Call secure Firebase Cloud Function (API key never exposed to client)
     const response = await fetch(CLASSIFY_FUNCTION_URL, {
       method: 'POST',
@@ -248,13 +267,23 @@ async function handleStoreEvent(request) {
   console.log('✅ Event stored locally:', eventData.event_type);
 
   // 🔥 FIRESTORE SYNC
+  let firestoreSynced = false;
+  let firestoreReason = 'not_attempted';
+
   try {
-    await syncToFirestore(eventData);
+    const syncResult = await syncToFirestore(eventData);
+    firestoreSynced = Boolean(syncResult && syncResult.success);
+    firestoreReason = syncResult && syncResult.reason ? syncResult.reason : 'unknown';
   } catch (err) {
     console.error('❌ Firestore sync error:', err);
+    firestoreReason = 'sync_exception';
   }
 
-  return { success: true };
+  return {
+    success: true,
+    firestore_synced: firestoreSynced,
+    firestore_reason: firestoreReason
+  };
 }
 
 // ==================== FIRESTORE SYNC ====================
@@ -263,15 +292,23 @@ async function handleStoreEvent(request) {
 
 async function syncToFirestore(eventData) {
   try {
-    const projectId = 'ai-product-dev-e7da9';
+    if (!FIRESTORE_BASE_URL) {
+      console.warn('⚠️ Missing Firebase env config for Firestore sync');
+      return { success: false, reason: 'missing_env_config' };
+    }
     
     // Get userId from authentication (Firebase Auth UID)
-    const { userId, userEmail } = await chrome.storage.local.get(['userId', 'userEmail']);
+    const { userId, userEmail, userAuthToken } = await chrome.storage.local.get(['userId', 'userEmail', 'userAuthToken']);
     
     // If no userId, user hasn't logged in yet - skip sync
     if (!userId) {
       console.log('⏸️ Skipping Firestore sync - user not logged in');
-      return;
+      return { success: false, reason: 'user_not_logged_in' };
+    }
+
+    if (!userAuthToken) {
+      console.log('⏸️ Skipping Firestore sync - missing auth token');
+      return { success: false, reason: 'missing_auth_token' };
     }
     
     // Add email to event data if available (for user identification in dashboard)
@@ -281,7 +318,7 @@ async function syncToFirestore(eventData) {
     
     const finalUserId = userId;
     
-    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${finalUserId}/events`;
+    const url = `${FIRESTORE_BASE_URL}/users/${finalUserId}/events`;
     
     const payload = {
       fields: convertToFirestoreFields(eventData)
@@ -292,6 +329,7 @@ async function syncToFirestore(eventData) {
     const response = await fetch(url, {
       method: 'POST',
       headers: {
+        'Authorization': `Bearer ${userAuthToken}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify(payload)
@@ -300,11 +338,12 @@ async function syncToFirestore(eventData) {
     if (!response.ok) {
       const errorText = await response.text();
       console.error(`❌ Firestore HTTP ${response.status}:`, errorText);
-      return;
+      return { success: false, reason: `http_${response.status}` };
     }
 
     const result = await response.json();
     console.log('✅ Synced to Firestore:', eventData.event_type);
+    return { success: true, reason: 'ok' };
   } catch (error) {
     console.error('❌ Firestore fetch error:', error);
     throw error;
@@ -613,8 +652,12 @@ async function handleSelectiveDelete(request) {
 // Helper functions for Firestore deletion
 async function deleteAllFirestoreEvents(userId, authToken) {
   try {
-    const projectId = 'ai-product-dev-e7da9';
-    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${userId}/events`;
+    if (!FIRESTORE_BASE_URL) {
+      console.warn('⚠️ Missing Firebase env config for Firestore deletion');
+      return;
+    }
+
+    const url = `${FIRESTORE_BASE_URL}/users/${userId}/events`;
     
     // Get all event IDs
     const listResponse = await fetch(url, {
@@ -646,8 +689,12 @@ async function deleteAllFirestoreEvents(userId, authToken) {
 
 async function deleteFirestoreEventsByDate(userId, authToken, cutoffDate) {
   try {
-    const projectId = 'ai-product-dev-e7da9';
-    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${userId}/events`;
+    if (!FIRESTORE_BASE_URL) {
+      console.warn('⚠️ Missing Firebase env config for Firestore deletion by date');
+      return;
+    }
+
+    const url = `${FIRESTORE_BASE_URL}/users/${userId}/events`;
     
     const listResponse = await fetch(url, {
       headers: authToken ? { 'Authorization': `Bearer ${authToken}` } : {}
@@ -681,8 +728,12 @@ async function deleteFirestoreEventsByDate(userId, authToken, cutoffDate) {
 
 async function deleteFirestoreEventsByType(userId, authToken, eventTypes) {
   try {
-    const projectId = 'ai-product-dev-e7da9';
-    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${userId}/events`;
+    if (!FIRESTORE_BASE_URL) {
+      console.warn('⚠️ Missing Firebase env config for Firestore deletion by type');
+      return;
+    }
+
+    const url = `${FIRESTORE_BASE_URL}/users/${userId}/events`;
     
     const listResponse = await fetch(url, {
       headers: authToken ? { 'Authorization': `Bearer ${authToken}` } : {}

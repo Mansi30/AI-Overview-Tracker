@@ -565,14 +565,26 @@
     }
 
     try {
-      await chrome.runtime.sendMessage({
+      const response = await chrome.runtime.sendMessage({
         action: 'storeEvent',
         data: eventData
       });
-      console.log('✅ Event stored:', eventData.event_type);
+
+      if (response && response.success) {
+        if (response.firestore_synced) {
+          console.log('✅ Event stored and synced:', eventData.event_type);
+        } else {
+          console.warn('⚠️ Event stored locally only:', eventData.event_type, response.firestore_reason || 'unknown_reason');
+        }
+        return;
+      }
+
+      console.warn('⚠️ Event rejected:', eventData.event_type, response && response.reason ? response.reason : 'unknown_reason');
     } catch (e) {
       if (e.message.includes('Extension context invalidated')) {
         console.warn('⚠️ Extension context lost. Refresh page.');
+      } else {
+        console.error('❌ Failed to store event:', eventData.event_type, e);
       }
     }
   }
