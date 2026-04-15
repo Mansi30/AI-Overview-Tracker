@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
   "name": "AI Overview Tracker",
-  "version": "2.4.1",
+  "version": "2.5.0",
   "description": "Track user interactions with Google AI Overviews and cited sources for research purposes",
   "author": "Aditya Dubey/SimPPL",
   "permissions": [
     "storage",
     "alarms",
-    "tabs"
+    "tabs",
+    "webNavigation"
   ],
   "host_permissions": [
     "https://www.google.com/*",

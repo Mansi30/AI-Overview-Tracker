@@ -3,6 +3,15 @@
  * Stores data locally - Dashboard pulls from Firestore
  */
 
+// ==================== JOURNEY TRACKING STATE ====================
+
+// Store active journeys in memory
+const activeJourneys = new Map(); // { tabId: journeyData }
+
+// Journey configuration
+const JOURNEY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+const JOURNEY_MAX_DEPTH = 10; // Limit max navigation depth
+
 // ==================== INSTALLATION & USER ID ====================
 
 chrome.runtime.onInstalled.addListener(async (details) => {
@@ -88,6 +97,115 @@ async function attemptRefreshAndStore(refreshToken) {
   } catch (err) {
     console.error('Error exchanging refresh token:', err);
     return null;
+  }
+}
+
+// ==================== JOURNEY TRACKING HELPERS ====================
+
+function generateJourneyId() {
+  return `journey_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+}
+
+function generateNodeId() {
+  return `node_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+}
+
+function buildNavigationTree(navigationStack, rootUrl) {
+  // Convert flat navigation stack into tree structure
+  const root = {
+    node_id: 'root',
+    url: rootUrl,
+    domain: extractDomainFromUrl(rootUrl),
+    visited_at: navigationStack.length > 0 ? navigationStack[0].visited_at : new Date().toISOString(),
+    dwell_time_ms: 0,
+    children: []
+  };
+
+  const nodeMap = new Map();
+  nodeMap.set(rootUrl, root);
+
+  for (const node of navigationStack) {
+    const parent = nodeMap.get(node.parent_url) || root;
+
+    const treeNode = {
+      node_id: node.node_id,
+      url: node.url,
+      domain: node.domain,
+      visited_at: node.visited_at,
+      dwell_time_ms: node.dwell_time_ms || 0,
+      transition_type: node.transition_type,
+      children: []
+    };
+
+    parent.children.push(treeNode);
+    nodeMap.set(node.url, treeNode);
+  }
+
+  return root;
+}
+
+function calculateMaxDepth(node, currentDepth = 0) {
+  if (!node.children || node.children.length === 0) {
+    return currentDepth;
+  }
+
+  return Math.max(...node.children.map(child => calculateMaxDepth(child, currentDepth + 1)));
+}
+
+function extractDomainFromUrl(url) {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return 'unknown';
+  }
+}
+
+function calculateTTL(days) {
+  return Math.floor(Date.now() / 1000) + (days * 24 * 60 * 60);
+}
+
+async function finalizeJourney(journey, end_reason) {
+  try {
+    // Build tree structure from navigation stack
+    const tree = buildNavigationTree(journey.navigation_stack, journey.root_citation.url);
+
+    // Calculate total journey time
+    const startTime = new Date(journey.started_at).getTime();
+    const endTime = Date.now();
+
+    const journeyData = {
+      journey_id: journey.journey_id,
+      session_id: journey.session_id,
+      query: journey.query,
+      event_type: 'navigation_journey',
+
+      started_at: journey.started_at,
+      ended_at: new Date().toISOString(),
+      end_reason: end_reason, // "tab_closed", "timeout", "max_depth_reached"
+
+      root_citation: journey.root_citation,
+      navigation_tree: tree,
+
+      summary: {
+        total_pages_visited: journey.navigation_stack.length + 1, // +1 for root
+        max_depth: calculateMaxDepth(tree),
+        total_journey_time_ms: endTime - startTime,
+        domains_visited: [...new Set([journey.root_citation.domain, ...journey.navigation_stack.map(n => n.domain)])],
+        unique_domains_count: new Set([journey.root_citation.domain, ...journey.navigation_stack.map(n => n.domain)]).size
+      },
+
+      // Data retention
+      retention_days: 90,
+      ttl: calculateTTL(90),
+      created_at: new Date().toISOString()
+    };
+
+    // Store in local storage and sync to Firestore
+    await handleStoreEvent({ data: journeyData });
+
+    console.log('✅ Journey finalized:', journey.journey_id, 'Pages:', journeyData.summary.total_pages_visited);
+  } catch (error) {
+    console.error('❌ Failed to finalize journey:', error);
   }
 }
 
@@ -316,10 +434,169 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     handleClassifyTopic(request).then(sendResponse);
     return true;
   }
-  
+
+  // 🆕 NEW: Journey tracking
+  if (action === 'startJourney') {
+    const sourceTabId = sender.tab?.id;
+    if (!sourceTabId) {
+      sendResponse({ success: false, error: 'No tab ID' });
+      return false;
+    }
+
+    // Create journey data
+    const journey = {
+      journey_id: generateJourneyId(),
+      session_id: request.session_id,
+      query: request.query,
+      started_at: new Date().toISOString(),
+      root_citation: {
+        url: request.citation_url,
+        domain: request.citation_domain,
+        position: request.citation_position
+      },
+      navigation_stack: [],
+      current_node: null,
+      last_activity: Date.now(),
+      waiting_for_first_nav: true,
+      source_tab_id: sourceTabId // Track source tab
+    };
+
+    // Store journey temporarily - will be transferred to destination tab
+    activeJourneys.set(sourceTabId, journey);
+    console.log(`🗺️ Journey prepared on source tab ${sourceTabId}:`, journey.journey_id);
+
+    sendResponse({ success: true, journey_id: journey.journey_id });
+    return false;
+  }
+
   sendResponse({ error: 'Unknown action' });
   return false;
 });
+
+// ==================== JOURNEY NAVIGATION LISTENERS ====================
+
+// Listen to navigation events
+chrome.webNavigation.onCommitted.addListener((details) => {
+  const { tabId, url, transitionType, frameId } = details;
+
+  // Only track main frame (not iframes)
+  if (frameId !== 0) return;
+
+  // Check if this tab has a journey
+  let journey = activeJourneys.get(tabId);
+
+  // If no journey on this tab, check if any journey is waiting for this URL
+  if (!journey) {
+    for (const [sourceTabId, waitingJourney] of activeJourneys.entries()) {
+      if (waitingJourney.waiting_for_first_nav) {
+        // Check if this navigation matches the citation URL
+        if (url === waitingJourney.root_citation.url ||
+            extractDomainFromUrl(url) === waitingJourney.root_citation.domain) {
+          console.log(`🔀 Journey transferred from tab ${sourceTabId} to tab ${tabId}`);
+          // Transfer journey to this tab
+          journey = waitingJourney;
+          activeJourneys.delete(sourceTabId);
+          activeJourneys.set(tabId, journey);
+          break;
+        }
+      }
+    }
+  }
+
+  // Debug: Log all navigations
+  console.log(`🔍 Navigation event - Tab ${tabId}, URL: ${extractDomainFromUrl(url)}, Journey exists: ${!!journey}`);
+
+  if (!journey) return;
+
+  // If this is the first navigation (to the citation URL), mark journey as started
+  if (journey.waiting_for_first_nav) {
+    // Check if we're navigating to the citation URL
+    if (url === journey.root_citation.url || extractDomainFromUrl(url) === journey.root_citation.domain) {
+      console.log(`🗺️ Journey started for tab ${tabId}: ${journey.journey_id}`);
+      delete journey.waiting_for_first_nav;
+      journey.last_activity = Date.now();
+      // Don't add to navigation_stack yet, this is the root
+      return;
+    }
+  }
+
+  console.log(`✅ Processing navigation for journey ${journey.journey_id}, stack length: ${journey.navigation_stack.length}`);
+
+  // Check if we've reached max depth
+  if (journey.navigation_stack.length >= JOURNEY_MAX_DEPTH) {
+    console.log(`⚠️ Journey max depth reached for tab ${tabId}`);
+    finalizeJourney(journey, 'max_depth_reached');
+    activeJourneys.delete(tabId);
+    return;
+  }
+
+  // Create a new node for this navigation
+  const parentUrl = journey.navigation_stack.length > 0
+    ? journey.navigation_stack[journey.navigation_stack.length - 1].url
+    : journey.root_citation.url;
+
+  const node = {
+    node_id: generateNodeId(),
+    url: url,
+    domain: extractDomainFromUrl(url),
+    visited_at: new Date().toISOString(),
+    transition_type: transitionType, // "link", "typed", "reload", etc.
+    parent_url: parentUrl,
+    dwell_time_ms: 0
+  };
+
+  // Calculate dwell time for previous node
+  if (journey.current_node) {
+    const dwellStartTime = new Date(journey.current_node.visited_at).getTime();
+    const dwellEndTime = Date.now();
+    journey.current_node.dwell_time_ms = dwellEndTime - dwellStartTime;
+
+    console.log(`⏱️ Dwell time on ${journey.current_node.domain}: ${journey.current_node.dwell_time_ms}ms`);
+  } else if (!journey.waiting_for_first_nav) {
+    // This is the first real navigation after landing on citation page
+    // Create a node for the root citation
+    journey.current_node = {
+      node_id: 'root',
+      url: journey.root_citation.url,
+      domain: journey.root_citation.domain,
+      visited_at: journey.started_at,
+      dwell_time_ms: Date.now() - new Date(journey.started_at).getTime()
+    };
+    console.log(`⏱️ Dwell time on ${journey.current_node.domain}: ${journey.current_node.dwell_time_ms}ms`);
+  }
+
+  journey.navigation_stack.push(node);
+  journey.current_node = node;
+  journey.last_activity = Date.now();
+
+  console.log(`📍 Journey navigation [${journey.navigation_stack.length}]: ${extractDomainFromUrl(url)}`);
+});
+
+// Track when tab is closed - finalize journey
+chrome.tabs.onRemoved.addListener((tabId) => {
+  const journey = activeJourneys.get(tabId);
+  if (journey) {
+    console.log(`🚪 Tab ${tabId} closed, finalizing journey`);
+    finalizeJourney(journey, 'tab_closed');
+    activeJourneys.delete(tabId);
+  }
+
+  // Also handle dwell time tracking (existing code)
+  endDwellForTab(tabId).catch(() => {});
+});
+
+// Check for inactive journeys (timeout after 5 minutes)
+setInterval(() => {
+  const now = Date.now();
+
+  for (const [tabId, journey] of activeJourneys.entries()) {
+    if (now - journey.last_activity > JOURNEY_TIMEOUT_MS) {
+      console.log(`⏱️ Journey timeout for tab ${tabId}`);
+      finalizeJourney(journey, 'timeout');
+      activeJourneys.delete(tabId);
+    }
+  }
+}, 60000); // Check every minute
 
 // ==================== DWELL-TIME LISTENERS ====================
 //
@@ -354,10 +631,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   }
 });
 
-chrome.tabs.onRemoved.addListener((tabId) => {
-  // If the destination tab closes while it is focused, record dwell up to removal.
-  endDwellForTab(tabId).catch(() => {});
-});
+// Note: chrome.tabs.onRemoved is now handled in the JOURNEY NAVIGATION LISTENERS section above
 
 // Event storage
 // ==================== EVENT STORAGE ====================

@@ -497,6 +497,21 @@
             // Await tracking to increase chance it reaches the extension before navigation
             await trackCitationClick(citation, query, timeToClick);
 
+            // 🆕 NEW: Start journey tracking for this citation
+            try {
+              chrome.runtime.sendMessage({
+                action: 'startJourney',
+                session_id: CONFIG.SESSION_ID,
+                query: query,
+                citation_url: href,
+                citation_domain: citation.domain,
+                citation_position: citation.position
+              });
+              console.log('🗺️ Journey tracking started for:', citation.domain);
+            } catch (journeyErr) {
+              console.warn('⚠️ Journey tracking failed (non-fatal):', journeyErr);
+            }
+
             // Mark citation as clicked in the in-memory data so UI updates immediately
             try {
               citation.clicked = true;
