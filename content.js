@@ -476,7 +476,12 @@
   }
 
   // ==================== ENHANCED DATA EXTRACTION ====================
-  
+
+  function classifyOutletType(url) {
+    // Treat domains ending in .id (Indonesian TLD) as local, everything else as global
+    return /\.id(\/|$)/.test(url) ? 'local' : 'global';
+  }
+
   function extractCitations(aiOverviewContainer) {
     const citations = [];
     const seenUrls = new Set();
@@ -506,7 +511,8 @@
           position: citations.length + 1,
           text: link.textContent.trim() || link.getAttribute('aria-label') || '',
           title: link.getAttribute('title') || '',
-          
+          outlet_type: classifyOutletType(href),
+
           // Click tracking
           clicked: false,
           click_timestamp: null,
