@@ -486,10 +486,14 @@ async function saveSettings() {
     };
 
     // Save to storage
-    await chrome.runtime.sendMessage({
+    const result = await chrome.runtime.sendMessage({
       action: 'saveSettings',
       settings: settings
     });
+
+    if (!result || result.success !== true) {
+      throw new Error((result && result.error) || 'Settings save failed');
+    }
 
     // Show success message
     showStatus('Settings saved successfully!', 'success');
@@ -534,10 +538,14 @@ async function resetSettings() {
     };
 
     // Save defaults
-    await chrome.runtime.sendMessage({
+    const result = await chrome.runtime.sendMessage({
       action: 'saveSettings',
       settings: defaultSettings
     });
+
+    if (!result || result.success !== true) {
+      throw new Error((result && result.error) || 'Settings reset failed');
+    }
 
     // Reload form
     await loadSettings();

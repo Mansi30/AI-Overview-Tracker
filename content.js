@@ -239,13 +239,26 @@
       return DEFAULT_SEARCH_MODE_PREFERENCE;
     }
 
-    try {
-      const settings = await chrome.runtime.sendMessage({ action: 'getSettings' });
-      return normalizeSearchModePreference(settings && settings.search_mode_preference);
-    } catch (error) {
-      console.warn('⚠️ Failed to read search mode preference:', error);
-      return DEFAULT_SEARCH_MODE_PREFERENCE;
+    const maxAttempts = 3;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        const settings = await chrome.runtime.sendMessage({ action: 'getSettings' });
+        if (settings && settings.search_mode_preference) {
+          return normalizeSearchModePreference(settings.search_mode_preference);
+        }
+      } catch (error) {
+        if (attempt === maxAttempts - 1) {
+          console.warn('⚠️ Failed to read search mode preference:', error);
+        }
+      }
+
+      if (attempt < maxAttempts - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 75));
+      }
     }
+
+    return DEFAULT_SEARCH_MODE_PREFERENCE;
   }
 
   async function enforceSearchModePreference() {
@@ -940,6 +953,29 @@
     urlObserver.observe(document, { subtree: true, childList: true });
   }
 
+  function observeSettingsUpdates() {
+    if (!isExtensionContextValid()) {
+      return;
+    }
+
+    chrome.runtime.onMessage.addListener((message) => {
+      if (!message || message.action !== 'settingsUpdated') {
+        return;
+      }
+
+      CONFIG.MODE_REDIRECT_PENDING = false;
+      CONFIG.AI_MODE_RETRIES = {};
+      clearModeRedirectGuard();
+      saveModeEnforcedQueries({});
+
+      enforceSearchModePreference().then((redirected) => {
+        if (!redirected) {
+          scheduleDetection();
+        }
+      });
+    });
+  }
+
   // ==================== INIT ====================
   
   function init() {
@@ -970,6 +1006,7 @@
 
     observeDOMChanges();
     observeURLChanges();
+    observeSettingsUpdates();
     
     window.addEventListener('beforeunload', cleanup);
   }

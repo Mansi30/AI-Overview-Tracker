@@ -853,6 +853,28 @@ async function handleGetSettings() {
   return merged;
 }
 
+async function broadcastSettingsUpdated(settings) {
+  try {
+    const tabs = await chrome.tabs.query({});
+    await Promise.all(
+      tabs.map((tab) => {
+        if (typeof tab.id !== 'number') {
+          return Promise.resolve();
+        }
+
+        return chrome.tabs.sendMessage(tab.id, {
+          action: 'settingsUpdated',
+          settings
+        }).catch(() => {
+          // Ignore tabs without this content script.
+        });
+      })
+    );
+  } catch (error) {
+    console.warn('⚠️ Failed to broadcast settings update:', error);
+  }
+}
+
 async function handleSaveSettings(request) {
   if (!request.settings) {
     return { success: false, error: 'No settings provided' };
@@ -868,8 +890,13 @@ async function handleSaveSettings(request) {
   };
   
   await chrome.storage.local.set({
-    settings: normalizedSettings
+    settings: {
+      ...normalizedSettings,
+      _updated_at: Date.now()
+    }
   });
+
+  await broadcastSettingsUpdated(normalizedSettings);
   
   return { success: true, settings: normalizedSettings };
 }
