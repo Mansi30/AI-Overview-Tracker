@@ -168,6 +168,7 @@ async function createUserAccount() {
     await chrome.storage.local.set({
       userEmail: email,
       userAuthToken: data.idToken,
+      userRefreshToken: data.refreshToken,
       userId: data.localId // Use Firebase Auth UID instead of random ID
     });
 
@@ -252,6 +253,7 @@ async function loginUser() {
     await chrome.storage.local.set({
       userEmail: email,
       userAuthToken: data.idToken,
+      userRefreshToken: data.refreshToken,
       userId: data.localId // Use Firebase Auth UID
     });
 

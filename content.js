@@ -13,7 +13,8 @@
     SESSION_ID: generateSessionId(),
     TRACKED_QUERIES: new Set(),
     AI_OVERVIEW_FOUND: null,
-    MODE_REDIRECT_PENDING: false
+    MODE_REDIRECT_PENDING: false,
+    AI_MODE_RETRIES: {}  // queryKey → attempt count for udm=50 retry logic
   };
 
   const DEFAULT_SEARCH_MODE_PREFERENCE = 'all';
@@ -43,6 +44,10 @@
   function getSearchQuery() {
     const urlParams = new URLSearchParams(window.location.search);
     return urlParams.get('q') || '';
+  }
+
+  function isAIModeSearch() {
+    return new URLSearchParams(window.location.search).get('udm') === '50';
   }
 
   function extractDomain(url) {
@@ -392,6 +397,68 @@
     }
     
     console.log('❌ No valid AI Overview container found');
+    return null;
+  }
+
+  // ==================== AI MODE DETECTION (udm=50) ====================
+
+  function findAIModeContainer() {
+    console.log('🔍 Searching for AI Mode response container (udm=50)...');
+
+    const isExternalLink = (link) => {
+      const domain = extractDomain(link.href);
+      return domain &&
+             !domain.endsWith('google.com') &&
+             !link.href.startsWith('javascript:') &&
+             !link.href.startsWith('#') &&
+             !link.href.startsWith('about:');
+    };
+
+    // First check whether any external links exist at all — if not,
+    // the AI response simply hasn't streamed in yet.
+    const pageExternalLinks = Array.from(document.querySelectorAll('a[href]')).filter(isExternalLink);
+    if (pageExternalLinks.length === 0) {
+      console.log('⏳ No external citation links on page yet');
+      return null;
+    }
+
+    // Strategy 1: try known Google search result wrapper selectors.
+    // AI Mode may not have #rso / #center_col, but try anyway.
+    const specificSelectors = ['#rso', '#center_col', '#search', '[role="main"]', 'main', '#rcnt'];
+    for (const sel of specificSelectors) {
+      const el = document.querySelector(sel);
+      if (!el || !isElementVisible(el)) continue;
+      const extLinks = Array.from(el.querySelectorAll('a[href]')).filter(isExternalLink);
+      if (extLinks.length >= 1) {
+        console.log(`✅ AI Mode container found via "${sel}" (${extLinks.length} links)`);
+        el.setAttribute('data-ai-overview-container', 'true');
+        return el;
+      }
+    }
+
+    // Strategy 2: broad scan — find the visible element with the most external
+    // citation links that isn't the full-page body/html root.
+    let bestEl = null;
+    let bestCount = 0;
+
+    document.querySelectorAll('div, section, article').forEach(el => {
+      if (el === document.body || el === document.documentElement) return;
+      if (!isElementVisible(el)) return;
+
+      const extLinks = Array.from(el.querySelectorAll('a[href]')).filter(isExternalLink);
+      if (extLinks.length > bestCount) {
+        bestCount = extLinks.length;
+        bestEl = el;
+      }
+    });
+
+    if (bestEl) {
+      console.log(`✅ AI Mode container found via broad scan (${bestCount} citation links)`);
+      bestEl.setAttribute('data-ai-overview-container', 'true');
+      return bestEl;
+    }
+
+    console.log('⏳ AI Mode container not ready yet');
     return null;
   }
 
@@ -772,18 +839,47 @@
     console.log(`🔍 Search: "${query}"`);
     console.log('═══════════════════════════════════════');
 
-    CONFIG.TRACKED_QUERIES.add(queryKey);
+    const aiModeActive = isAIModeSearch();
 
-    const aiOverviewContainer = findAIOverviewContainer();
+    // For AI Mode (udm=50), defer adding to TRACKED_QUERIES until we either
+    // find the container or exhaust retries, so the mutation observer can retry.
+    if (!aiModeActive) {
+      CONFIG.TRACKED_QUERIES.add(queryKey);
+    }
+
+    let aiOverviewContainer = findAIOverviewContainer();
+
+    if (!aiOverviewContainer && aiModeActive) {
+      aiOverviewContainer = findAIModeContainer();
+    }
 
     if (aiOverviewContainer) {
-      console.log('🎯 AI OVERVIEW DETECTED ✅');
+      CONFIG.TRACKED_QUERIES.add(queryKey); // mark done (also handles AI Mode case)
+      console.log(aiModeActive ? '🎯 AI MODE DETECTED ✅' : '🎯 AI OVERVIEW DETECTED ✅');
       CONFIG.AI_OVERVIEW_FOUND = aiOverviewContainer;
-      
+
       const citations = await trackAIOverviewShown(aiOverviewContainer, query);
       setupClickTracking(aiOverviewContainer, citations, query);
-      
+
       console.log('═══════════════════════════════════════');
+    } else if (aiModeActive) {
+      // Response not rendered yet — increment retry count and let the
+      // mutation observer trigger another attempt (up to 8 tries ≈ 24 s).
+      // Key retries by query text only (not full URL) so the udm=50 redirect
+      // changing the URL doesn't reset the counter.
+      const retries = (CONFIG.AI_MODE_RETRIES[query] || 0) + 1;
+      CONFIG.AI_MODE_RETRIES[query] = retries;
+
+      if (retries >= 8) {
+        console.log('⚠️ AI Mode: max retries reached, recording with available citations');
+        CONFIG.TRACKED_QUERIES.add(queryKey);
+        CONFIG.AI_OVERVIEW_FOUND = true;
+        await trackAIOverviewShown(document.createElement('div'), query);
+        console.log('═══════════════════════════════════════');
+      } else {
+        console.log(`⏳ AI Mode: container not ready (attempt ${retries}/8), will retry on next DOM change`);
+        // Leave queryKey out of TRACKED_QUERIES so mutation observer retries.
+      }
     } else {
       console.log('📭 NO AI OVERVIEW ❌');
       CONFIG.AI_OVERVIEW_FOUND = null;
@@ -831,6 +927,7 @@
         
         CONFIG.TRACKED_QUERIES.clear();
         CONFIG.AI_OVERVIEW_FOUND = null;
+        CONFIG.AI_MODE_RETRIES = {};
 
         enforceSearchModePreference().then((redirected) => {
           if (!redirected) {

@@ -16,6 +16,7 @@ const CLASSIFY_FUNCTION_NAME = typeof ENV.CLASSIFY_FUNCTION_NAME === 'string' &&
 const CLASSIFY_FUNCTION_URL = FIREBASE_PROJECT_ID
   ? `https://${FIREBASE_REGION}-${FIREBASE_PROJECT_ID}.cloudfunctions.net/${CLASSIFY_FUNCTION_NAME}`
   : '';
+const FIREBASE_WEB_API_KEY = typeof ENV.FIREBASE_WEB_API_KEY === 'string' ? ENV.FIREBASE_WEB_API_KEY.trim() : '';
 const FIRESTORE_BASE_URL = FIREBASE_PROJECT_ID
   ? `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/(default)/documents`
   : '';
@@ -286,6 +287,49 @@ async function handleStoreEvent(request) {
   };
 }
 
+// ==================== TOKEN REFRESH ====================
+
+async function refreshAuthToken() {
+  const { userRefreshToken } = await chrome.storage.local.get('userRefreshToken');
+  if (!userRefreshToken) {
+    console.warn('⚠️ No refresh token stored — user must log in again');
+    return null;
+  }
+  if (!FIREBASE_WEB_API_KEY) {
+    console.warn('⚠️ Missing FIREBASE_WEB_API_KEY — cannot refresh token');
+    return null;
+  }
+
+  try {
+    const response = await fetch(
+      `https://securetoken.googleapis.com/v1/token?key=${encodeURIComponent(FIREBASE_WEB_API_KEY)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(userRefreshToken)}`
+      }
+    );
+
+    if (!response.ok) {
+      const err = await response.text();
+      console.error('❌ Token refresh failed:', response.status, err);
+      return null;
+    }
+
+    const data = await response.json();
+    // data.id_token is the new Firebase ID token; data.refresh_token may be rotated
+    await chrome.storage.local.set({
+      userAuthToken: data.id_token,
+      userRefreshToken: data.refresh_token
+    });
+    console.log('🔄 Firebase ID token refreshed successfully');
+    return data.id_token;
+  } catch (error) {
+    console.error('❌ Token refresh error:', error);
+    return null;
+  }
+}
+
 // ==================== FIRESTORE SYNC ====================
 
 // ==================== FIRESTORE SYNC (WITH USER ID FIX) ====================
@@ -298,7 +342,7 @@ async function syncToFirestore(eventData) {
     }
     
     // Get userId from authentication (Firebase Auth UID)
-    const { userId, userEmail, userAuthToken } = await chrome.storage.local.get(['userId', 'userEmail', 'userAuthToken']);
+    const { userId, userEmail, userAuthToken, query_language } = await chrome.storage.local.get(['userId', 'userEmail', 'userAuthToken', 'query_language']);
     
     // If no userId, user hasn't logged in yet - skip sync
     if (!userId) {
@@ -317,23 +361,48 @@ async function syncToFirestore(eventData) {
     }
     
     const finalUserId = userId;
-    
-    const url = `${FIRESTORE_BASE_URL}/users/${finalUserId}/events`;
-    
+
+    const querySlug = eventData.query
+      ? eventData.query.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40)
+      : 'no-query';
+    const ts = new Date(eventData.timestamp).toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const docId = `${ts}_${eventData.event_type}_${querySlug}`;
+
+    const collection = query_language || 'events';
+    const url = `${FIRESTORE_BASE_URL}/users/${finalUserId}/${collection}/${encodeURIComponent(docId)}`;
+
     const payload = {
       fields: convertToFirestoreFields(eventData)
     };
 
     console.log('📤 Sending to Firestore:', eventData.event_type, 'User:', finalUserId.substr(0, 15) + '...');
 
-    const response = await fetch(url, {
-      method: 'POST',
+    let activeToken = userAuthToken;
+    let response = await fetch(url, {
+      method: 'PATCH',
       headers: {
-        'Authorization': `Bearer ${userAuthToken}`,
+        'Authorization': `Bearer ${activeToken}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify(payload)
     });
+
+    // On 401 the ID token has expired — attempt a silent refresh and retry once.
+    if (response.status === 401) {
+      console.warn('🔄 Auth token expired, attempting refresh...');
+      const newToken = await refreshAuthToken();
+      if (newToken) {
+        activeToken = newToken;
+        response = await fetch(url, {
+          method: 'PATCH',
+          headers: {
+            'Authorization': `Bearer ${activeToken}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(payload)
+        });
+      }
+    }
 
     if (!response.ok) {
       const errorText = await response.text();
