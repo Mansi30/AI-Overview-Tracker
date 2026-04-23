@@ -89,7 +89,7 @@
               <div class="storage-stat">
                 <span class="storage-label">Dashboard Access:</span>
                 <span class="storage-value">
-                  <a href="https://ai-overview-extension-de.web.app" target="_blank" class="footer-link">Open Dashboard →</a>
+                  <a href="#" id="dashboardLink" target="_blank" class="footer-link">Open Dashboard →</a>
                 </span>
               </div>
             </div>
@@ -178,6 +178,25 @@
               <input type="checkbox" id="includeQueryText" checked>
               <span class="toggle-slider"></span>
             </label>
+          </div>
+        </div>
+
+        <div class="setting-item">
+          <div class="setting-info">
+            <label class="setting-label" for="searchModePreference">
+              Search Opening Mode
+            </label>
+            <p class="setting-description">
+              Choose how Google search opens automatically: All keeps regular results, Random alternates between AI and Web, or force always AI / always non-AI.
+            </p>
+          </div>
+          <div class="setting-control">
+            <select id="searchModePreference" class="select-input">
+              <option value="all" selected>All (Regular)</option>
+              <option value="random">Random (AI or Web)</option>
+              <option value="ai">Always AI</option>
+              <option value="no_ai">Always Non-AI (Web)</option>
+            </select>
           </div>
         </div>
       </section>
@@ -317,6 +336,7 @@
     </footer>
   </div>
 
+  <script src="env.js"></script>
   <script src="options.js"></script>
 </body>
 </html>

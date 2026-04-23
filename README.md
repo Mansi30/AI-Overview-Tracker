@@ -87,18 +87,69 @@ text
 
 1. **Install the Extension** (see Installation above)
 
-2. **Visit the Dashboard**
-- Go to [https://ai-overview-extension-de.web.app](https://ai-overview-extension-de.web.app)
+2. **Create and Populate Environment Config**
+- Copy `.env.example` to `.env`
+- The template contains shared defaults (project id/region/function/dashboard).
+- Set `FIREBASE_WEB_API_KEY` using the value provided by Adrian.
+- If any value is missing or outdated, request the latest credentials from Adrian.
+
+3. **Generate Runtime Env File**
+- Run:
+
+```bash
+node scripts/generate-env.mjs
+```
+
+- This creates `env.js` from `.env` for the extension runtime.
+- `env.js` and `.env` are gitignored and should not be committed.
+
+4. **Load/Reload the Extension**
+- Open `chrome://extensions`
+- Click **Reload** on the extension card (or use **Load unpacked** again)
+
+5. **Visit the Dashboard**
+- Open `https://ai-product-dev-e7da9.web.app`
 - Sign in with your email (Firebase Authentication)
 
-3. **Configure Firebase (Automatic)**
-- The extension automatically connects to your Firebase project
-- All data is stored securely in your personal database
-
-4. **Start Tracking!**
+6. **Start Tracking!**
 - Perform a Google Search
 - If an AI Overview appears, tracking begins automatically
 - View results in real-time on your dashboard
+
+### Environment Variables Reference
+
+| Variable | Required | Description |
+|---|---|---|
+| `FIREBASE_PROJECT_ID` | Yes | Firebase project id used for Firestore and Cloud Function endpoints |
+| `FIREBASE_WEB_API_KEY` | Yes | Firebase Web API key used for Identity Toolkit auth requests |
+| `FIREBASE_REGION` | No | Cloud Functions region (default: `us-central1`) |
+| `CLASSIFY_FUNCTION_NAME` | No | Cloud Function name for topic classification (default: `classifyTopic`) |
+| `DASHBOARD_URL` | No | Dashboard URL shown in options UI |
+
+Note: `manifest.json` host permissions are static and must still allow your chosen Firebase domains.
+
+### New User Onboarding Checklist
+
+Use this checklist when onboarding to the shared Firebase project used by this extension.
+
+Credentials for this shared project are provided by Adrian.
+
+1. Copy `.env.example` to `.env`.
+
+2. Generate runtime config:
+
+```bash
+node scripts/generate-env.mjs
+```
+
+3. Reload extension in `chrome://extensions`.
+
+4. Open extension Settings page:
+- Create Account & Setup (or Login to Existing Account)
+
+5. Perform one Google search and verify that the search shows in the firestore.
+
+If you see `http_403`, contact the project maintainer to confirm Firestore rules or App Check settings for this shared project.
 
 ### Extension Settings
 

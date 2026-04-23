@@ -17,3 +17,10 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.bak
+
+# Local environment configuration
+.env
+env.js
+
+# Claude
+.claude

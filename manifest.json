@@ -13,7 +13,7 @@
     "https://www.google.com/*",
     "https://google.com/*",
     "https://firestore.googleapis.com/*",
-    "https://us-central1-ai-overview-extension-de.cloudfunctions.net/*"
+    "https://us-central1-ai-product-dev-e7da9.cloudfunctions.net/*"
   ],
   "content_scripts": [
     {

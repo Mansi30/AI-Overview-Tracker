@@ -6,12 +6,58 @@
 // ==================== INITIALIZATION ====================
 
 document.addEventListener('DOMContentLoaded', async () => {
+  const dashboardLink = document.getElementById('dashboardLink');
+  if (dashboardLink) {
+    dashboardLink.href = DASHBOARD_URL;
+  }
+
   await loadAuthStatus();
   await loadSettings();
   await loadStorageInfo();
   setupEventListeners();
   displayVersionInfo();
 });
+
+const DEFAULT_SEARCH_MODE_PREFERENCE = 'all';
+const ENV = globalThis.AIO_ENV || {};
+const FIREBASE_WEB_API_KEY = typeof ENV.FIREBASE_WEB_API_KEY === 'string' ? ENV.FIREBASE_WEB_API_KEY.trim() : '';
+const FIREBASE_PROJECT_ID = typeof ENV.FIREBASE_PROJECT_ID === 'string' ? ENV.FIREBASE_PROJECT_ID.trim() : '';
+const DASHBOARD_URL = typeof ENV.DASHBOARD_URL === 'string' && ENV.DASHBOARD_URL.trim()
+  ? ENV.DASHBOARD_URL.trim()
+  : '#';
+const FIREBASE_AUTH_BASE_URL = 'https://identitytoolkit.googleapis.com/v1';
+const FIRESTORE_BASE_URL = FIREBASE_PROJECT_ID
+  ? `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/(default)/documents`
+  : '';
+
+function getFirebaseAuthUrl(path) {
+  if (!FIREBASE_WEB_API_KEY) {
+    throw new Error('Missing Firebase config: FIREBASE_WEB_API_KEY');
+  }
+
+  return `${FIREBASE_AUTH_BASE_URL}/${path}?key=${encodeURIComponent(FIREBASE_WEB_API_KEY)}`;
+}
+
+function getFirestoreUserUrl(userId) {
+  if (!FIRESTORE_BASE_URL) {
+    throw new Error('Missing Firebase config: FIREBASE_PROJECT_ID');
+  }
+
+  return `${FIRESTORE_BASE_URL}/users/${userId}`;
+}
+
+function normalizeSearchModePreference(value) {
+  if (value === 'all' || value === 'random' || value === 'ai' || value === 'no_ai') {
+    return value;
+  }
+
+  // Keep old saved values compatible.
+  if (value === 'normal') {
+    return 'all';
+  }
+
+  return DEFAULT_SEARCH_MODE_PREFERENCE;
+}
 
 function setupEventListeners() {
   document.getElementById('saveBtn').addEventListener('click', saveSettings);
@@ -102,7 +148,7 @@ async function createUserAccount() {
     button.innerHTML = '<span class="btn-icon">⏳</span> Creating Account...';
 
     // Send request to Firebase Auth via dashboard URL
-    const response = await fetch('https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=AIzaSyDBOKEynotV7RKB2HMEldT9igso7WeBtMY', {
+    const response = await fetch(getFirebaseAuthUrl('accounts:signUp'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -126,7 +172,7 @@ async function createUserAccount() {
       userId: data.localId // Use Firebase Auth UID instead of random ID
     });
 
-    // Create user document in Firestore with role (include idToken to satisfy rules)
+    // Create user document in Firestore with role
     await createUserInFirestore(data.localId, email, data.idToken);
 
     showStatus('Account created successfully! You can now access the dashboard.', 'success');
@@ -145,10 +191,9 @@ async function createUserAccount() {
   }
 }
 
-async function createUserInFirestore(userId, email) {
+async function createUserInFirestore(userId, email, idToken) {
   try {
-    const projectId = 'ai-overview-tracker-dev';
-    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${userId}`;
+    const url = getFirestoreUserUrl(userId);
     
     const payload = {
       fields: {
@@ -161,7 +206,10 @@ async function createUserInFirestore(userId, email) {
 
     await fetch(url, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Authorization': `Bearer ${idToken}`,
+        'Content-Type': 'application/json'
+      },
       body: JSON.stringify(payload)
     });
   } catch (error) {
@@ -185,7 +233,7 @@ async function loginUser() {
     button.innerHTML = '<span class="btn-icon">⏳</span> Logging In...';
 
     // Sign in with Firebase Auth
-    const response = await fetch('https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=AIzaSyDBOKEynotV7RKB2HMEldT9igso7WeBtMY', {
+    const response = await fetch(getFirebaseAuthUrl('accounts:signInWithPassword'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -259,7 +307,7 @@ async function resetPassword() {
     button.disabled = true;
     button.innerHTML = '<span class="btn-icon">⏳</span> Sending Email...';
 
-    const response = await fetch('https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key=AIzaSyDBOKEynotV7RKB2HMEldT9igso7WeBtMY', {
+    const response = await fetch(getFirebaseAuthUrl('accounts:sendOobCode'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -325,7 +373,7 @@ async function deleteAccount() {
     }
 
     // Delete user from Firebase Auth
-    const authResponse = await fetch('https://identitytoolkit.googleapis.com/v1/accounts:delete?key=AIzaSyDBOKEynotV7RKB2HMEldT9igso7WeBtMY', {
+    const authResponse = await fetch(getFirebaseAuthUrl('accounts:delete'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -341,11 +389,11 @@ async function deleteAccount() {
 
     // Delete user document and events from Firestore
     try {
-      const projectId = 'ai-overview-tracker-dev';
-      const firestoreUrl = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${userId}`;
+      const firestoreUrl = getFirestoreUserUrl(userId);
       
       await fetch(firestoreUrl, {
-        method: 'DELETE'
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${userAuthToken}` }
       });
     } catch (firestoreError) {
       console.warn('Firestore deletion warning:', firestoreError);
@@ -386,6 +434,7 @@ async function loadSettings() {
     document.getElementById('trackingEnabled').checked = settings.tracking_enabled !== false;
     document.getElementById('includeQueryText').checked = settings.include_query_text !== false;
     document.getElementById('dataRetentionDays').value = settings.data_retention_days || 90;
+    document.getElementById('searchModePreference').value = normalizeSearchModePreference(settings.search_mode_preference);
   } catch (error) {
     console.error('Failed to load settings:', error);
     showStatus('Failed to load settings', 'error');
@@ -432,14 +481,19 @@ async function saveSettings() {
       tracking_enabled: document.getElementById('trackingEnabled').checked,
       include_query_text: document.getElementById('includeQueryText').checked,
       data_retention_days: parseInt(document.getElementById('dataRetentionDays').value),
+      search_mode_preference: normalizeSearchModePreference(document.getElementById('searchModePreference').value),
       auto_export: false // Reserved for future use
     };
 
     // Save to storage
-    await chrome.runtime.sendMessage({
+    const result = await chrome.runtime.sendMessage({
       action: 'saveSettings',
       settings: settings
     });
+
+    if (!result || result.success !== true) {
+      throw new Error((result && result.error) || 'Settings save failed');
+    }
 
     // Show success message
     showStatus('Settings saved successfully!', 'success');
@@ -479,14 +533,19 @@ async function resetSettings() {
       tracking_enabled: true,
       auto_export: false,
       data_retention_days: 90,
-      include_query_text: true
+      include_query_text: true,
+      search_mode_preference: DEFAULT_SEARCH_MODE_PREFERENCE
     };
 
     // Save defaults
-    await chrome.runtime.sendMessage({
+    const result = await chrome.runtime.sendMessage({
       action: 'saveSettings',
       settings: defaultSettings
     });
+
+    if (!result || result.success !== true) {
+      throw new Error((result && result.error) || 'Settings reset failed');
+    }
 
     // Reload form
     await loadSettings();

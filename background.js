@@ -3,6 +3,49 @@
  * Stores data locally - Dashboard pulls from Firestore
  */
 
+try {
+  importScripts('env.js');
+} catch (error) {
+  console.warn('env.js not found; Firebase-backed features may be unavailable.');
+}
+
+const ENV = globalThis.AIO_ENV || {};
+const FIREBASE_PROJECT_ID = typeof ENV.FIREBASE_PROJECT_ID === 'string' ? ENV.FIREBASE_PROJECT_ID.trim() : '';
+const FIREBASE_REGION = typeof ENV.FIREBASE_REGION === 'string' && ENV.FIREBASE_REGION.trim() ? ENV.FIREBASE_REGION.trim() : 'us-central1';
+const CLASSIFY_FUNCTION_NAME = typeof ENV.CLASSIFY_FUNCTION_NAME === 'string' && ENV.CLASSIFY_FUNCTION_NAME.trim() ? ENV.CLASSIFY_FUNCTION_NAME.trim() : 'classifyTopic';
+const CLASSIFY_FUNCTION_URL = FIREBASE_PROJECT_ID
+  ? `https://${FIREBASE_REGION}-${FIREBASE_PROJECT_ID}.cloudfunctions.net/${CLASSIFY_FUNCTION_NAME}`
+  : '';
+const FIREBASE_WEB_API_KEY = typeof ENV.FIREBASE_WEB_API_KEY === 'string' ? ENV.FIREBASE_WEB_API_KEY.trim() : '';
+const FIRESTORE_BASE_URL = FIREBASE_PROJECT_ID
+  ? `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/(default)/documents`
+  : '';
+
+const DEFAULT_SEARCH_MODE_PREFERENCE = 'all';
+const VALID_SEARCH_MODE_PREFERENCES = new Set(['all', 'random', 'normal', 'ai', 'no_ai']);
+
+function normalizeSearchModePreference(value) {
+  if (!VALID_SEARCH_MODE_PREFERENCES.has(value)) {
+    return DEFAULT_SEARCH_MODE_PREFERENCE;
+  }
+
+  // Legacy "normal" maps to the new "all" option.
+  if (value === 'normal') {
+    return 'all';
+  }
+
+  return value;
+}
+
+function normalizeRetentionDays(value) {
+  const parsed = parseInt(value, 10);
+  if (!Number.isFinite(parsed)) {
+    return 90;
+  }
+
+  return Math.min(Math.max(parsed, 1), 3650);
+}
+
 // ==================== INSTALLATION & USER ID ====================
 
 chrome.runtime.onInstalled.addListener(async (details) => {
@@ -44,8 +87,17 @@ async function initializeStorage() {
       tracking_enabled: true,
       auto_export: false,
       data_retention_days: 90,
-      include_query_text: true
+      include_query_text: true,
+      search_mode_preference: DEFAULT_SEARCH_MODE_PREFERENCE
     };
+  } else {
+    const normalizedMode = normalizeSearchModePreference(result.settings.search_mode_preference);
+    if (result.settings.search_mode_preference !== normalizedMode) {
+      updates.settings = {
+        ...result.settings,
+        search_mode_preference: normalizedMode
+      };
+    }
   }
   
   if (Object.keys(updates).length > 0) {
@@ -54,42 +106,6 @@ async function initializeStorage() {
 }
 
 // ==================== LLM TOPIC CLASSIFICATION ====================
-
-// Firebase Cloud Function endpoint (keeps API key secure on backend).
-// If not configured/deployed for your project, we return { topic: 'general' }
-// so the content script's keyword fallback runs.
-const CLASSIFY_FUNCTION_URL = '';
-
-// Exchange refreshToken for a fresh idToken using Secure Token API
-async function attemptRefreshAndStore(refreshToken) {
-  if (!refreshToken) return null;
-  try {
-    // Use the same API key as the frontend (.env) - public client key
-    const API_KEY = 'AIzaSyDBOKEynotV7RKB2HMEldT9igso7WeBtMY';
-    const res = await fetch(`https://securetoken.googleapis.com/v1/token?key=${API_KEY}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(refreshToken)}`
-    });
-
-    if (!res.ok) {
-      const txt = await res.text();
-      console.warn('Refresh token exchange failed:', res.status, txt);
-      return null;
-    }
-
-    const data = await res.json();
-    if (data && data.id_token) {
-      await chrome.storage.local.set({ userAuthToken: data.id_token, userRefreshToken: data.refresh_token || refreshToken });
-      return data.id_token;
-    }
-
-    return null;
-  } catch (err) {
-    console.error('Error exchanging refresh token:', err);
-    return null;
-  }
-}
 
 // ==================== DWELL TIME TRACKING (TAB FOCUS) ====================
 //
@@ -239,6 +255,11 @@ async function handleClassifyTopic(request) {
       return { topic: 'general' };
     }
     
+    if (!CLASSIFY_FUNCTION_URL) {
+      console.warn('⚠️ Missing Firebase env config for topic classification');
+      return { topic: 'general' };
+    }
+
     // Call secure Firebase Cloud Function (API key never exposed to client)
     const response = await fetch(CLASSIFY_FUNCTION_URL, {
       method: 'POST',
@@ -448,13 +469,66 @@ async function handleStoreEvent(request) {
   }
 
   // 🔥 FIRESTORE SYNC
+  let firestoreSynced = false;
+  let firestoreReason = 'not_attempted';
+
   try {
-    await syncToFirestore(eventData);
+    const syncResult = await syncToFirestore(eventData);
+    firestoreSynced = Boolean(syncResult && syncResult.success);
+    firestoreReason = syncResult && syncResult.reason ? syncResult.reason : 'unknown';
   } catch (err) {
     console.error('❌ Firestore sync error:', err);
+    firestoreReason = 'sync_exception';
   }
 
-  return { success: true };
+  return {
+    success: true,
+    firestore_synced: firestoreSynced,
+    firestore_reason: firestoreReason
+  };
+}
+
+// ==================== TOKEN REFRESH ====================
+
+async function refreshAuthToken() {
+  const { userRefreshToken } = await chrome.storage.local.get('userRefreshToken');
+  if (!userRefreshToken) {
+    console.warn('⚠️ No refresh token stored — user must log in again');
+    return null;
+  }
+  if (!FIREBASE_WEB_API_KEY) {
+    console.warn('⚠️ Missing FIREBASE_WEB_API_KEY — cannot refresh token');
+    return null;
+  }
+
+  try {
+    const response = await fetch(
+      `https://securetoken.googleapis.com/v1/token?key=${encodeURIComponent(FIREBASE_WEB_API_KEY)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(userRefreshToken)}`
+      }
+    );
+
+    if (!response.ok) {
+      const err = await response.text();
+      console.error('❌ Token refresh failed:', response.status, err);
+      return null;
+    }
+
+    const data = await response.json();
+    // data.id_token is the new Firebase ID token; data.refresh_token may be rotated
+    await chrome.storage.local.set({
+      userAuthToken: data.id_token,
+      userRefreshToken: data.refresh_token
+    });
+    console.log('🔄 Firebase ID token refreshed successfully');
+    return data.id_token;
+  } catch (error) {
+    console.error('❌ Token refresh error:', error);
+    return null;
+  }
 }
 
 // ==================== FIRESTORE SYNC ====================
@@ -463,67 +537,68 @@ async function handleStoreEvent(request) {
 
 async function syncToFirestore(eventData) {
   try {
-  const projectId = 'ai-overview-tracker-dev';
-    
+    if (!FIRESTORE_BASE_URL) {
+      console.warn('⚠️ Missing Firebase env config for Firestore sync');
+      return { success: false, reason: 'missing_env_config' };
+    }
+
     // Get userId from authentication (Firebase Auth UID)
-    const { userId, userEmail, userAuthToken } = await chrome.storage.local.get(['userId', 'userEmail', 'userAuthToken']);
-    
+    const { userId, userEmail, userAuthToken, query_language } = await chrome.storage.local.get(['userId', 'userEmail', 'userAuthToken', 'query_language']);
+
     // If no userId, user hasn't logged in yet - skip sync
     if (!userId) {
       console.log('⏸️ Skipping Firestore sync - user not logged in');
-      return;
+      return { success: false, reason: 'user_not_logged_in' };
     }
-    
+
+    if (!userAuthToken) {
+      console.log('⏸️ Skipping Firestore sync - missing auth token');
+      return { success: false, reason: 'missing_auth_token' };
+    }
+
     // Add email to event data if available (for user identification in dashboard)
     if (userEmail) {
       eventData.userEmail = userEmail;
     }
-
-    // Firestore REST writes require auth when security rules are enabled.
-    // Without a bearer token, requests typically fail with 401/403.
-    if (!userAuthToken) {
-      console.warn('⚠️ Missing userAuthToken - attempting to refresh using stored refreshToken');
-      // Try to refresh using stored refreshToken
-      const stored = await chrome.storage.local.get(['userRefreshToken']);
-      const refreshed = await attemptRefreshAndStore(stored.userRefreshToken);
-      if (refreshed) {
-        userAuthToken = refreshed;
-      } else {
-        console.warn('⏸️ Skipping Firestore sync - no valid token');
-        return;
-      }
-    }
     
     const finalUserId = userId;
-    
-    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${finalUserId}/events`;
-    
+
+    const querySlug = eventData.query
+      ? eventData.query.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40)
+      : 'no-query';
+    const ts = new Date(eventData.timestamp).toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const docId = `${ts}_${eventData.event_type}_${querySlug}`;
+
+    const collection = query_language || 'events';
+    const url = `${FIRESTORE_BASE_URL}/users/${finalUserId}/${collection}/${encodeURIComponent(docId)}`;
+
     const payload = {
       fields: convertToFirestoreFields(eventData)
     };
 
     console.log('📤 Sending to Firestore:', eventData.event_type, 'User:', finalUserId.substr(0, 15) + '...');
 
-    // Attempt write; if unauthenticated (401), try refreshing once and retrying.
+    let activeToken = userAuthToken;
     let response = await fetch(url, {
-      method: 'POST',
+      method: 'PATCH',
       headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${userAuthToken}`
+        'Authorization': `Bearer ${activeToken}`,
+        'Content-Type': 'application/json'
       },
       body: JSON.stringify(payload)
     });
 
-    if (response.status === 401 || response.status === 403) {
-      console.warn('Firestore write unauthenticated, attempting token refresh and retry');
-      const stored = await chrome.storage.local.get(['userRefreshToken']);
-      const newToken = await attemptRefreshAndStore(stored.userRefreshToken);
+    // On 401 the ID token has expired — attempt a silent refresh and retry once.
+    if (response.status === 401) {
+      console.warn('🔄 Auth token expired, attempting refresh...');
+      const newToken = await refreshAuthToken();
       if (newToken) {
+        activeToken = newToken;
         response = await fetch(url, {
-          method: 'POST',
+          method: 'PATCH',
           headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${newToken}`
+            'Authorization': `Bearer ${activeToken}`,
+            'Content-Type': 'application/json'
           },
           body: JSON.stringify(payload)
         });
@@ -533,11 +608,12 @@ async function syncToFirestore(eventData) {
     if (!response.ok) {
       const errorText = await response.text();
       console.error(`❌ Firestore HTTP ${response.status}:`, errorText);
-      return;
+      return { success: false, reason: `http_${response.status}` };
     }
 
     const result = await response.json();
     console.log('✅ Synced to Firestore:', eventData.event_type);
+    return { success: true, reason: 'ok' };
   } catch (error) {
     console.error('❌ Firestore fetch error:', error);
     throw error;
@@ -846,8 +922,12 @@ async function handleSelectiveDelete(request) {
 // Helper functions for Firestore deletion
 async function deleteAllFirestoreEvents(userId, authToken) {
   try {
-    const projectId = 'ai-overview-tracker-dev';
-    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${userId}/events`;
+    if (!FIRESTORE_BASE_URL) {
+      console.warn('⚠️ Missing Firebase env config for Firestore deletion');
+      return;
+    }
+
+    const url = `${FIRESTORE_BASE_URL}/users/${userId}/events`;
     
     // Get all event IDs
     const listResponse = await fetch(url, {
@@ -879,8 +959,12 @@ async function deleteAllFirestoreEvents(userId, authToken) {
 
 async function deleteFirestoreEventsByDate(userId, authToken, cutoffDate) {
   try {
-    const projectId = 'ai-overview-tracker-dev';
-    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${userId}/events`;
+    if (!FIRESTORE_BASE_URL) {
+      console.warn('⚠️ Missing Firebase env config for Firestore deletion by date');
+      return;
+    }
+
+    const url = `${FIRESTORE_BASE_URL}/users/${userId}/events`;
     
     const listResponse = await fetch(url, {
       headers: authToken ? { 'Authorization': `Bearer ${authToken}` } : {}
@@ -914,8 +998,12 @@ async function deleteFirestoreEventsByDate(userId, authToken, cutoffDate) {
 
 async function deleteFirestoreEventsByType(userId, authToken, eventTypes) {
   try {
-    const projectId = 'ai-overview-tracker-dev';
-    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${userId}/events`;
+    if (!FIRESTORE_BASE_URL) {
+      console.warn('⚠️ Missing Firebase env config for Firestore deletion by type');
+      return;
+    }
+
+    const url = `${FIRESTORE_BASE_URL}/users/${userId}/events`;
     
     const listResponse = await fetch(url, {
       headers: authToken ? { 'Authorization': `Bearer ${authToken}` } : {}
@@ -947,24 +1035,71 @@ async function deleteFirestoreEventsByType(userId, authToken, eventTypes) {
 // Settings
 async function handleGetSettings() {
   const result = await chrome.storage.local.get('settings');
-  return result.settings || {
+  const defaults = {
     tracking_enabled: true,
     auto_export: false,
     data_retention_days: 90,
-    include_query_text: true
+    include_query_text: true,
+    search_mode_preference: DEFAULT_SEARCH_MODE_PREFERENCE
   };
+
+  const merged = {
+    ...defaults,
+    ...(result.settings || {})
+  };
+
+  merged.search_mode_preference = normalizeSearchModePreference(merged.search_mode_preference);
+  merged.data_retention_days = normalizeRetentionDays(merged.data_retention_days);
+
+  return merged;
+}
+
+async function broadcastSettingsUpdated(settings) {
+  try {
+    const tabs = await chrome.tabs.query({});
+    await Promise.all(
+      tabs.map((tab) => {
+        if (typeof tab.id !== 'number') {
+          return Promise.resolve();
+        }
+
+        return chrome.tabs.sendMessage(tab.id, {
+          action: 'settingsUpdated',
+          settings
+        }).catch(() => {
+          // Ignore tabs without this content script.
+        });
+      })
+    );
+  } catch (error) {
+    console.warn('⚠️ Failed to broadcast settings update:', error);
+  }
 }
 
 async function handleSaveSettings(request) {
   if (!request.settings) {
     return { success: false, error: 'No settings provided' };
   }
+
+  const incoming = request.settings;
+  const normalizedSettings = {
+    tracking_enabled: incoming.tracking_enabled !== false,
+    auto_export: incoming.auto_export === true,
+    data_retention_days: normalizeRetentionDays(incoming.data_retention_days),
+    include_query_text: incoming.include_query_text !== false,
+    search_mode_preference: normalizeSearchModePreference(incoming.search_mode_preference)
+  };
   
   await chrome.storage.local.set({
-    settings: request.settings
+    settings: {
+      ...normalizedSettings,
+      _updated_at: Date.now()
+    }
   });
+
+  await broadcastSettingsUpdated(normalizedSettings);
   
-  return { success: true };
+  return { success: true, settings: normalizedSettings };
 }
 
 // Periodic cleanup
