@@ -107,10 +107,135 @@ async function initializeStorage() {
 
 // ==================== LLM TOPIC CLASSIFICATION ====================
 
+// ==================== DWELL TIME TRACKING (TAB FOCUS) ====================
+//
+// Dwell time definition (from requirements):
+// - start when the destination tab/window becomes active
+// - end when that tab/window loses focus (next onActivated) or is removed
+//
+// We keep this state in-memory; it resets if the service worker is restarted.
+const DWELL_PENDING_MAX_AGE_MS = 10 * 60 * 1000; // 10 minutes
+let pendingDwellClicks = []; // citations clicked but dwell start not yet assigned
+let activeDwellByTabId = {}; // { [tabId]: { startTs, startIso, pending } }
+let lastActivatedTabId = null;
+
+function safeToUrlParts(maybeUrl) {
+  try {
+    const u = new URL(maybeUrl);
+    return u;
+  } catch {
+    return null;
+  }
+}
+
+function urlsMatchCitation(tabUrl, citationUrl) {
+  if (!tabUrl || !citationUrl) return false;
+  if (tabUrl === citationUrl) return true;
+
+  const t = safeToUrlParts(tabUrl);
+  const c = safeToUrlParts(citationUrl);
+  if (!t || !c) return false;
+
+  // Strong match: origin+pathname (ignore query params)
+  if (t.origin === c.origin && t.pathname === c.pathname) return true;
+
+  // Fallback match: hostname only (captures redirects landing on same site)
+  return t.hostname === c.hostname;
+}
+
+function prunePendingDwellClicks(nowMs) {
+  pendingDwellClicks = pendingDwellClicks.filter((p) => {
+    if (!p.click_timestamp) return false;
+    const clickTs = Date.parse(p.click_timestamp);
+    if (Number.isNaN(clickTs)) return false;
+    return nowMs - clickTs <= DWELL_PENDING_MAX_AGE_MS;
+  });
+}
+
+function createCitationDwellEvent(pending, dwellStartTs, dwellEndTs) {
+  return {
+    session_id: pending.session_id,
+    timestamp: new Date(dwellEndTs).toISOString(),
+    event_type: 'citation_dwelled',
+
+    // Query details
+    query: pending.query,
+    query_category: pending.query_category,
+    query_topic: pending.query_topic,
+
+    // Citation details
+    citation_url: pending.citation_url,
+    citation_domain: pending.citation_domain,
+    citation_position: pending.citation_position,
+    click_timestamp: pending.click_timestamp,
+
+    // Dwell timings
+    dwell_time_ms: Math.max(0, Math.round(dwellEndTs - dwellStartTs)),
+    dwell_start_timestamp: new Date(dwellStartTs).toISOString(),
+    dwell_end_timestamp: new Date(dwellEndTs).toISOString(),
+
+    // Page context (where the user clicked from)
+    page_url: pending.page_url,
+    page_title: pending.page_title || null,
+
+    // Data retention
+    retention_days: pending.retention_days,
+    ttl: pending.ttl,
+
+    created_at: new Date().toISOString()
+  };
+}
+
+async function maybeAssignDwellToTab(tabId, tabUrl) {
+  // Only assign if this tab isn't already tracking dwell.
+  if (activeDwellByTabId[tabId]) return;
+
+  prunePendingDwellClicks(Date.now());
+  if (!pendingDwellClicks.length) return;
+
+  // Find all pending clicks that match this tab URL and choose the most recent click.
+  const matches = pendingDwellClicks.filter((p) => urlsMatchCitation(tabUrl, p.citation_url));
+  if (!matches.length) return;
+
+  const best = matches.sort((a, b) => Date.parse(b.click_timestamp) - Date.parse(a.click_timestamp))[0];
+
+  activeDwellByTabId[tabId] = {
+    startTs: Date.now(),
+    startIso: new Date().toISOString(),
+    pending: best
+  };
+
+  // Ensure this click yields exactly one dwell event.
+  pendingDwellClicks = pendingDwellClicks.filter((p) => p !== best);
+}
+
+async function endDwellForTab(tabId) {
+  const record = activeDwellByTabId[tabId];
+  if (!record) return;
+
+  const endTs = Date.now();
+  const dwellEvent = createCitationDwellEvent(record.pending, record.startTs, endTs);
+
+  // Persist dwell event using the same pipeline as other events.
+  try {
+    await handleStoreEvent({ data: dwellEvent });
+  } catch (err) {
+    console.error('❌ Failed to store dwell event:', err);
+  }
+
+  delete activeDwellByTabId[tabId];
+}
+
 async function handleClassifyTopic(request) {
   const query = request.query;
   
   if (!query || query.trim().length === 0) {
+    return { topic: 'general' };
+  }
+
+  // No function endpoint configured -> skip remote classification
+  // and let the keyword fallback decide locally.
+  if (!CLASSIFY_FUNCTION_URL) {
     return { topic: 'general' };
   }
   
@@ -217,6 +342,44 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   return false;
 });
 
+// ==================== DWELL-TIME LISTENERS ====================
+//
+// We use tab focus changes to measure dwell time on external citation destinations.
+chrome.tabs.onActivated.addListener(async (activeInfo) => {
+  const newTabId = activeInfo.tabId;
+
+  // End dwell for the previously-active tab (if any).
+  if (lastActivatedTabId !== null && lastActivatedTabId !== newTabId) {
+    try {
+      await endDwellForTab(lastActivatedTabId);
+    } catch (err) {
+      console.error('❌ Failed ending dwell:', err);
+    }
+  }
+
+  lastActivatedTabId = newTabId;
+
+  // Start dwell on the newly active tab (if it matches a pending citation click).
+  try {
+    const tab = await chrome.tabs.get(newTabId);
+    await maybeAssignDwellToTab(newTabId, tab && tab.url);
+  } catch (err) {
+    // Ignore failures (tab may not be accessible yet)
+  }
+});
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  // When navigation finishes in an already-active tab, we may now be able to match URL.
+  if (changeInfo.status === 'complete' && tab && tab.active) {
+    maybeAssignDwellToTab(tabId, tab.url).catch(() => {});
+  }
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  // If the destination tab closes while it is focused, record dwell up to removal.
+  endDwellForTab(tabId).catch(() => {});
+});
+
 // Event storage
 // ==================== EVENT STORAGE ====================
 
@@ -266,6 +429,44 @@ async function handleStoreEvent(request) {
   });
 
   console.log('✅ Event stored locally:', eventData.event_type);
+
+  // ==================== DWELL (pending assignment) ====================
+  // When a citation is clicked, we start tracking dwell time once its destination
+  // tab becomes active and end it when that tab loses focus.
+  if (eventData.event_type === 'citation_clicked' && eventData.citation_url) {
+    pendingDwellClicks.push({
+      session_id: eventData.session_id,
+      query: eventData.query,
+      query_category: eventData.query_category,
+      query_topic: eventData.query_topic,
+
+      citation_url: eventData.citation_url,
+      citation_domain: eventData.citation_domain,
+      citation_position: eventData.citation_position,
+
+      click_timestamp: eventData.click_timestamp || eventData.timestamp,
+      page_url: eventData.page_url,
+      page_title: eventData.page_title,
+
+      retention_days: eventData.retention_days,
+      ttl: eventData.ttl
+    });
+
+    prunePendingDwellClicks(Date.now());
+
+    // Best-effort: if the destination tab is already active, start dwell immediately.
+    try {
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        for (const tab of tabs) {
+          if (tab && tab.id != null) {
+            maybeAssignDwellToTab(tab.id, tab.url).catch(() => {});
+          }
+        }
+      });
+    } catch {
+      // No-op
+    }
+  }
 
   // 🔥 FIRESTORE SYNC
   let firestoreSynced = false;
@@ -340,10 +541,10 @@ async function syncToFirestore(eventData) {
       console.warn('⚠️ Missing Firebase env config for Firestore sync');
       return { success: false, reason: 'missing_env_config' };
     }
-    
+
     // Get userId from authentication (Firebase Auth UID)
     const { userId, userEmail, userAuthToken, query_language } = await chrome.storage.local.get(['userId', 'userEmail', 'userAuthToken', 'query_language']);
-    
+
     // If no userId, user hasn't logged in yet - skip sync
     if (!userId) {
       console.log('⏸️ Skipping Firestore sync - user not logged in');
@@ -354,7 +555,7 @@ async function syncToFirestore(eventData) {
       console.log('⏸️ Skipping Firestore sync - missing auth token');
       return { success: false, reason: 'missing_auth_token' };
     }
-    
+
     // Add email to event data if available (for user identification in dashboard)
     if (userEmail) {
       eventData.userEmail = userEmail;

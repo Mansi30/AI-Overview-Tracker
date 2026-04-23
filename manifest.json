@@ -6,7 +6,8 @@
   "author": "Aditya Dubey/SimPPL",
   "permissions": [
     "storage",
-    "alarms"
+    "alarms",
+    "tabs"
   ],
   "host_permissions": [
     "https://www.google.com/*",
