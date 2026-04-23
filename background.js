@@ -3,48 +3,14 @@
  * Stores data locally - Dashboard pulls from Firestore
  */
 
-try {
-  importScripts('env.js');
-} catch (error) {
-  console.warn('env.js not found; Firebase-backed features may be unavailable.');
-}
+// ==================== JOURNEY TRACKING STATE ====================
 
-const ENV = globalThis.AIO_ENV || {};
-const FIREBASE_PROJECT_ID = typeof ENV.FIREBASE_PROJECT_ID === 'string' ? ENV.FIREBASE_PROJECT_ID.trim() : '';
-const FIREBASE_REGION = typeof ENV.FIREBASE_REGION === 'string' && ENV.FIREBASE_REGION.trim() ? ENV.FIREBASE_REGION.trim() : 'us-central1';
-const CLASSIFY_FUNCTION_NAME = typeof ENV.CLASSIFY_FUNCTION_NAME === 'string' && ENV.CLASSIFY_FUNCTION_NAME.trim() ? ENV.CLASSIFY_FUNCTION_NAME.trim() : 'classifyTopic';
-const CLASSIFY_FUNCTION_URL = FIREBASE_PROJECT_ID
-  ? `https://${FIREBASE_REGION}-${FIREBASE_PROJECT_ID}.cloudfunctions.net/${CLASSIFY_FUNCTION_NAME}`
-  : '';
-const FIREBASE_WEB_API_KEY = typeof ENV.FIREBASE_WEB_API_KEY === 'string' ? ENV.FIREBASE_WEB_API_KEY.trim() : '';
-const FIRESTORE_BASE_URL = FIREBASE_PROJECT_ID
-  ? `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/(default)/documents`
-  : '';
+// Store active journeys in memory
+const activeJourneys = new Map(); // { tabId: journeyData }
 
-const DEFAULT_SEARCH_MODE_PREFERENCE = 'all';
-const VALID_SEARCH_MODE_PREFERENCES = new Set(['all', 'random', 'normal', 'ai', 'no_ai']);
-
-function normalizeSearchModePreference(value) {
-  if (!VALID_SEARCH_MODE_PREFERENCES.has(value)) {
-    return DEFAULT_SEARCH_MODE_PREFERENCE;
-  }
-
-  // Legacy "normal" maps to the new "all" option.
-  if (value === 'normal') {
-    return 'all';
-  }
-
-  return value;
-}
-
-function normalizeRetentionDays(value) {
-  const parsed = parseInt(value, 10);
-  if (!Number.isFinite(parsed)) {
-    return 90;
-  }
-
-  return Math.min(Math.max(parsed, 1), 3650);
-}
+// Journey configuration
+const JOURNEY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+const JOURNEY_MAX_DEPTH = 10; // Limit max navigation depth
 
 // ==================== INSTALLATION & USER ID ====================
 
@@ -87,17 +53,8 @@ async function initializeStorage() {
       tracking_enabled: true,
       auto_export: false,
       data_retention_days: 90,
-      include_query_text: true,
-      search_mode_preference: DEFAULT_SEARCH_MODE_PREFERENCE
+      include_query_text: true
     };
-  } else {
-    const normalizedMode = normalizeSearchModePreference(result.settings.search_mode_preference);
-    if (result.settings.search_mode_preference !== normalizedMode) {
-      updates.settings = {
-        ...result.settings,
-        search_mode_preference: normalizedMode
-      };
-    }
   }
   
   if (Object.keys(updates).length > 0) {
@@ -106,6 +63,151 @@ async function initializeStorage() {
 }
 
 // ==================== LLM TOPIC CLASSIFICATION ====================
+
+// Firebase Cloud Function endpoint (keeps API key secure on backend).
+// If not configured/deployed for your project, we return { topic: 'general' }
+// so the content script's keyword fallback runs.
+const CLASSIFY_FUNCTION_URL = '';
+
+// Exchange refreshToken for a fresh idToken using Secure Token API
+async function attemptRefreshAndStore(refreshToken) {
+  if (!refreshToken) return null;
+  try {
+    // Use the same API key as the frontend (.env) - public client key
+    const API_KEY = 'AIzaSyDBOKEynotV7RKB2HMEldT9igso7WeBtMY';
+    const res = await fetch(`https://securetoken.googleapis.com/v1/token?key=${API_KEY}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(refreshToken)}`
+    });
+
+    if (!res.ok) {
+      const txt = await res.text();
+      console.warn('Refresh token exchange failed:', res.status, txt);
+      return null;
+    }
+
+    const data = await res.json();
+    if (data && data.id_token) {
+      await chrome.storage.local.set({ userAuthToken: data.id_token, userRefreshToken: data.refresh_token || refreshToken });
+      return data.id_token;
+    }
+
+    return null;
+  } catch (err) {
+    console.error('Error exchanging refresh token:', err);
+    return null;
+  }
+}
+
+// ==================== JOURNEY TRACKING HELPERS ====================
+
+function generateJourneyId() {
+  return `journey_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+}
+
+function generateNodeId() {
+  return `node_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+}
+
+function buildNavigationTree(navigationStack, rootUrl) {
+  // Convert flat navigation stack into tree structure
+  const root = {
+    node_id: 'root',
+    url: rootUrl,
+    domain: extractDomainFromUrl(rootUrl),
+    visited_at: navigationStack.length > 0 ? navigationStack[0].visited_at : new Date().toISOString(),
+    dwell_time_ms: 0,
+    children: []
+  };
+
+  const nodeMap = new Map();
+  nodeMap.set(rootUrl, root);
+
+  for (const node of navigationStack) {
+    const parent = nodeMap.get(node.parent_url) || root;
+
+    const treeNode = {
+      node_id: node.node_id,
+      url: node.url,
+      domain: node.domain,
+      visited_at: node.visited_at,
+      dwell_time_ms: node.dwell_time_ms || 0,
+      transition_type: node.transition_type,
+      children: []
+    };
+
+    parent.children.push(treeNode);
+    nodeMap.set(node.url, treeNode);
+  }
+
+  return root;
+}
+
+function calculateMaxDepth(node, currentDepth = 0) {
+  if (!node.children || node.children.length === 0) {
+    return currentDepth;
+  }
+
+  return Math.max(...node.children.map(child => calculateMaxDepth(child, currentDepth + 1)));
+}
+
+function extractDomainFromUrl(url) {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return 'unknown';
+  }
+}
+
+function calculateTTL(days) {
+  return Math.floor(Date.now() / 1000) + (days * 24 * 60 * 60);
+}
+
+async function finalizeJourney(journey, end_reason) {
+  try {
+    // Build tree structure from navigation stack
+    const tree = buildNavigationTree(journey.navigation_stack, journey.root_citation.url);
+
+    // Calculate total journey time
+    const startTime = new Date(journey.started_at).getTime();
+    const endTime = Date.now();
+
+    const journeyData = {
+      journey_id: journey.journey_id,
+      session_id: journey.session_id,
+      query: journey.query,
+      event_type: 'navigation_journey',
+
+      started_at: journey.started_at,
+      ended_at: new Date().toISOString(),
+      end_reason: end_reason, // "tab_closed", "timeout", "max_depth_reached"
+
+      root_citation: journey.root_citation,
+      navigation_tree: tree,
+
+      summary: {
+        total_pages_visited: journey.navigation_stack.length + 1, // +1 for root
+        max_depth: calculateMaxDepth(tree),
+        total_journey_time_ms: endTime - startTime,
+        domains_visited: [...new Set([journey.root_citation.domain, ...journey.navigation_stack.map(n => n.domain)])],
+        unique_domains_count: new Set([journey.root_citation.domain, ...journey.navigation_stack.map(n => n.domain)]).size
+      },
+
+      // Data retention
+      retention_days: 90,
+      ttl: calculateTTL(90),
+      created_at: new Date().toISOString()
+    };
+
+    // Store in local storage and sync to Firestore
+    await handleStoreEvent({ data: journeyData });
+
+    console.log('✅ Journey finalized:', journey.journey_id, 'Pages:', journeyData.summary.total_pages_visited);
+  } catch (error) {
+    console.error('❌ Failed to finalize journey:', error);
+  }
+}
 
 // ==================== DWELL TIME TRACKING (TAB FOCUS) ====================
 //
@@ -255,11 +357,6 @@ async function handleClassifyTopic(request) {
       return { topic: 'general' };
     }
     
-    if (!CLASSIFY_FUNCTION_URL) {
-      console.warn('⚠️ Missing Firebase env config for topic classification');
-      return { topic: 'general' };
-    }
-
     // Call secure Firebase Cloud Function (API key never exposed to client)
     const response = await fetch(CLASSIFY_FUNCTION_URL, {
       method: 'POST',
@@ -337,10 +434,169 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     handleClassifyTopic(request).then(sendResponse);
     return true;
   }
-  
+
+  // 🆕 NEW: Journey tracking
+  if (action === 'startJourney') {
+    const sourceTabId = sender.tab?.id;
+    if (!sourceTabId) {
+      sendResponse({ success: false, error: 'No tab ID' });
+      return false;
+    }
+
+    // Create journey data
+    const journey = {
+      journey_id: generateJourneyId(),
+      session_id: request.session_id,
+      query: request.query,
+      started_at: new Date().toISOString(),
+      root_citation: {
+        url: request.citation_url,
+        domain: request.citation_domain,
+        position: request.citation_position
+      },
+      navigation_stack: [],
+      current_node: null,
+      last_activity: Date.now(),
+      waiting_for_first_nav: true,
+      source_tab_id: sourceTabId // Track source tab
+    };
+
+    // Store journey temporarily - will be transferred to destination tab
+    activeJourneys.set(sourceTabId, journey);
+    console.log(`🗺️ Journey prepared on source tab ${sourceTabId}:`, journey.journey_id);
+
+    sendResponse({ success: true, journey_id: journey.journey_id });
+    return false;
+  }
+
   sendResponse({ error: 'Unknown action' });
   return false;
 });
+
+// ==================== JOURNEY NAVIGATION LISTENERS ====================
+
+// Listen to navigation events
+chrome.webNavigation.onCommitted.addListener((details) => {
+  const { tabId, url, transitionType, frameId } = details;
+
+  // Only track main frame (not iframes)
+  if (frameId !== 0) return;
+
+  // Check if this tab has a journey
+  let journey = activeJourneys.get(tabId);
+
+  // If no journey on this tab, check if any journey is waiting for this URL
+  if (!journey) {
+    for (const [sourceTabId, waitingJourney] of activeJourneys.entries()) {
+      if (waitingJourney.waiting_for_first_nav) {
+        // Check if this navigation matches the citation URL
+        if (url === waitingJourney.root_citation.url ||
+            extractDomainFromUrl(url) === waitingJourney.root_citation.domain) {
+          console.log(`🔀 Journey transferred from tab ${sourceTabId} to tab ${tabId}`);
+          // Transfer journey to this tab
+          journey = waitingJourney;
+          activeJourneys.delete(sourceTabId);
+          activeJourneys.set(tabId, journey);
+          break;
+        }
+      }
+    }
+  }
+
+  // Debug: Log all navigations
+  console.log(`🔍 Navigation event - Tab ${tabId}, URL: ${extractDomainFromUrl(url)}, Journey exists: ${!!journey}`);
+
+  if (!journey) return;
+
+  // If this is the first navigation (to the citation URL), mark journey as started
+  if (journey.waiting_for_first_nav) {
+    // Check if we're navigating to the citation URL
+    if (url === journey.root_citation.url || extractDomainFromUrl(url) === journey.root_citation.domain) {
+      console.log(`🗺️ Journey started for tab ${tabId}: ${journey.journey_id}`);
+      delete journey.waiting_for_first_nav;
+      journey.last_activity = Date.now();
+      // Don't add to navigation_stack yet, this is the root
+      return;
+    }
+  }
+
+  console.log(`✅ Processing navigation for journey ${journey.journey_id}, stack length: ${journey.navigation_stack.length}`);
+
+  // Check if we've reached max depth
+  if (journey.navigation_stack.length >= JOURNEY_MAX_DEPTH) {
+    console.log(`⚠️ Journey max depth reached for tab ${tabId}`);
+    finalizeJourney(journey, 'max_depth_reached');
+    activeJourneys.delete(tabId);
+    return;
+  }
+
+  // Create a new node for this navigation
+  const parentUrl = journey.navigation_stack.length > 0
+    ? journey.navigation_stack[journey.navigation_stack.length - 1].url
+    : journey.root_citation.url;
+
+  const node = {
+    node_id: generateNodeId(),
+    url: url,
+    domain: extractDomainFromUrl(url),
+    visited_at: new Date().toISOString(),
+    transition_type: transitionType, // "link", "typed", "reload", etc.
+    parent_url: parentUrl,
+    dwell_time_ms: 0
+  };
+
+  // Calculate dwell time for previous node
+  if (journey.current_node) {
+    const dwellStartTime = new Date(journey.current_node.visited_at).getTime();
+    const dwellEndTime = Date.now();
+    journey.current_node.dwell_time_ms = dwellEndTime - dwellStartTime;
+
+    console.log(`⏱️ Dwell time on ${journey.current_node.domain}: ${journey.current_node.dwell_time_ms}ms`);
+  } else if (!journey.waiting_for_first_nav) {
+    // This is the first real navigation after landing on citation page
+    // Create a node for the root citation
+    journey.current_node = {
+      node_id: 'root',
+      url: journey.root_citation.url,
+      domain: journey.root_citation.domain,
+      visited_at: journey.started_at,
+      dwell_time_ms: Date.now() - new Date(journey.started_at).getTime()
+    };
+    console.log(`⏱️ Dwell time on ${journey.current_node.domain}: ${journey.current_node.dwell_time_ms}ms`);
+  }
+
+  journey.navigation_stack.push(node);
+  journey.current_node = node;
+  journey.last_activity = Date.now();
+
+  console.log(`📍 Journey navigation [${journey.navigation_stack.length}]: ${extractDomainFromUrl(url)}`);
+});
+
+// Track when tab is closed - finalize journey
+chrome.tabs.onRemoved.addListener((tabId) => {
+  const journey = activeJourneys.get(tabId);
+  if (journey) {
+    console.log(`🚪 Tab ${tabId} closed, finalizing journey`);
+    finalizeJourney(journey, 'tab_closed');
+    activeJourneys.delete(tabId);
+  }
+
+  // Also handle dwell time tracking (existing code)
+  endDwellForTab(tabId).catch(() => {});
+});
+
+// Check for inactive journeys (timeout after 5 minutes)
+setInterval(() => {
+  const now = Date.now();
+
+  for (const [tabId, journey] of activeJourneys.entries()) {
+    if (now - journey.last_activity > JOURNEY_TIMEOUT_MS) {
+      console.log(`⏱️ Journey timeout for tab ${tabId}`);
+      finalizeJourney(journey, 'timeout');
+      activeJourneys.delete(tabId);
+    }
+  }
+}, 60000); // Check every minute
 
 // ==================== DWELL-TIME LISTENERS ====================
 //
@@ -375,10 +631,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   }
 });
 
-chrome.tabs.onRemoved.addListener((tabId) => {
-  // If the destination tab closes while it is focused, record dwell up to removal.
-  endDwellForTab(tabId).catch(() => {});
-});
+// Note: chrome.tabs.onRemoved is now handled in the JOURNEY NAVIGATION LISTENERS section above
 
 // Event storage
 // ==================== EVENT STORAGE ====================
@@ -469,66 +722,13 @@ async function handleStoreEvent(request) {
   }
 
   // 🔥 FIRESTORE SYNC
-  let firestoreSynced = false;
-  let firestoreReason = 'not_attempted';
-
   try {
-    const syncResult = await syncToFirestore(eventData);
-    firestoreSynced = Boolean(syncResult && syncResult.success);
-    firestoreReason = syncResult && syncResult.reason ? syncResult.reason : 'unknown';
+    await syncToFirestore(eventData);
   } catch (err) {
     console.error('❌ Firestore sync error:', err);
-    firestoreReason = 'sync_exception';
   }
 
-  return {
-    success: true,
-    firestore_synced: firestoreSynced,
-    firestore_reason: firestoreReason
-  };
-}
-
-// ==================== TOKEN REFRESH ====================
-
-async function refreshAuthToken() {
-  const { userRefreshToken } = await chrome.storage.local.get('userRefreshToken');
-  if (!userRefreshToken) {
-    console.warn('⚠️ No refresh token stored — user must log in again');
-    return null;
-  }
-  if (!FIREBASE_WEB_API_KEY) {
-    console.warn('⚠️ Missing FIREBASE_WEB_API_KEY — cannot refresh token');
-    return null;
-  }
-
-  try {
-    const response = await fetch(
-      `https://securetoken.googleapis.com/v1/token?key=${encodeURIComponent(FIREBASE_WEB_API_KEY)}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: `grant_type=refresh_token&refresh_token=${encodeURIComponent(userRefreshToken)}`
-      }
-    );
-
-    if (!response.ok) {
-      const err = await response.text();
-      console.error('❌ Token refresh failed:', response.status, err);
-      return null;
-    }
-
-    const data = await response.json();
-    // data.id_token is the new Firebase ID token; data.refresh_token may be rotated
-    await chrome.storage.local.set({
-      userAuthToken: data.id_token,
-      userRefreshToken: data.refresh_token
-    });
-    console.log('🔄 Firebase ID token refreshed successfully');
-    return data.id_token;
-  } catch (error) {
-    console.error('❌ Token refresh error:', error);
-    return null;
-  }
+  return { success: true };
 }
 
 // ==================== FIRESTORE SYNC ====================
@@ -537,68 +737,67 @@ async function refreshAuthToken() {
 
 async function syncToFirestore(eventData) {
   try {
-    if (!FIRESTORE_BASE_URL) {
-      console.warn('⚠️ Missing Firebase env config for Firestore sync');
-      return { success: false, reason: 'missing_env_config' };
-    }
-
+  const projectId = 'ai-overview-tracker-dev';
+    
     // Get userId from authentication (Firebase Auth UID)
-    const { userId, userEmail, userAuthToken, query_language } = await chrome.storage.local.get(['userId', 'userEmail', 'userAuthToken', 'query_language']);
-
+    const { userId, userEmail, userAuthToken } = await chrome.storage.local.get(['userId', 'userEmail', 'userAuthToken']);
+    
     // If no userId, user hasn't logged in yet - skip sync
     if (!userId) {
       console.log('⏸️ Skipping Firestore sync - user not logged in');
-      return { success: false, reason: 'user_not_logged_in' };
+      return;
     }
-
-    if (!userAuthToken) {
-      console.log('⏸️ Skipping Firestore sync - missing auth token');
-      return { success: false, reason: 'missing_auth_token' };
-    }
-
+    
     // Add email to event data if available (for user identification in dashboard)
     if (userEmail) {
       eventData.userEmail = userEmail;
     }
+
+    // Firestore REST writes require auth when security rules are enabled.
+    // Without a bearer token, requests typically fail with 401/403.
+    if (!userAuthToken) {
+      console.warn('⚠️ Missing userAuthToken - attempting to refresh using stored refreshToken');
+      // Try to refresh using stored refreshToken
+      const stored = await chrome.storage.local.get(['userRefreshToken']);
+      const refreshed = await attemptRefreshAndStore(stored.userRefreshToken);
+      if (refreshed) {
+        userAuthToken = refreshed;
+      } else {
+        console.warn('⏸️ Skipping Firestore sync - no valid token');
+        return;
+      }
+    }
     
     const finalUserId = userId;
-
-    const querySlug = eventData.query
-      ? eventData.query.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40)
-      : 'no-query';
-    const ts = new Date(eventData.timestamp).toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const docId = `${ts}_${eventData.event_type}_${querySlug}`;
-
-    const collection = query_language || 'events';
-    const url = `${FIRESTORE_BASE_URL}/users/${finalUserId}/${collection}/${encodeURIComponent(docId)}`;
-
+    
+    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${finalUserId}/events`;
+    
     const payload = {
       fields: convertToFirestoreFields(eventData)
     };
 
     console.log('📤 Sending to Firestore:', eventData.event_type, 'User:', finalUserId.substr(0, 15) + '...');
 
-    let activeToken = userAuthToken;
+    // Attempt write; if unauthenticated (401), try refreshing once and retrying.
     let response = await fetch(url, {
-      method: 'PATCH',
+      method: 'POST',
       headers: {
-        'Authorization': `Bearer ${activeToken}`,
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${userAuthToken}`
       },
       body: JSON.stringify(payload)
     });
 
-    // On 401 the ID token has expired — attempt a silent refresh and retry once.
-    if (response.status === 401) {
-      console.warn('🔄 Auth token expired, attempting refresh...');
-      const newToken = await refreshAuthToken();
+    if (response.status === 401 || response.status === 403) {
+      console.warn('Firestore write unauthenticated, attempting token refresh and retry');
+      const stored = await chrome.storage.local.get(['userRefreshToken']);
+      const newToken = await attemptRefreshAndStore(stored.userRefreshToken);
       if (newToken) {
-        activeToken = newToken;
         response = await fetch(url, {
-          method: 'PATCH',
+          method: 'POST',
           headers: {
-            'Authorization': `Bearer ${activeToken}`,
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${newToken}`
           },
           body: JSON.stringify(payload)
         });
@@ -608,12 +807,11 @@ async function syncToFirestore(eventData) {
     if (!response.ok) {
       const errorText = await response.text();
       console.error(`❌ Firestore HTTP ${response.status}:`, errorText);
-      return { success: false, reason: `http_${response.status}` };
+      return;
     }
 
     const result = await response.json();
     console.log('✅ Synced to Firestore:', eventData.event_type);
-    return { success: true, reason: 'ok' };
   } catch (error) {
     console.error('❌ Firestore fetch error:', error);
     throw error;
@@ -922,12 +1120,8 @@ async function handleSelectiveDelete(request) {
 // Helper functions for Firestore deletion
 async function deleteAllFirestoreEvents(userId, authToken) {
   try {
-    if (!FIRESTORE_BASE_URL) {
-      console.warn('⚠️ Missing Firebase env config for Firestore deletion');
-      return;
-    }
-
-    const url = `${FIRESTORE_BASE_URL}/users/${userId}/events`;
+    const projectId = 'ai-overview-tracker-dev';
+    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${userId}/events`;
     
     // Get all event IDs
     const listResponse = await fetch(url, {
@@ -959,12 +1153,8 @@ async function deleteAllFirestoreEvents(userId, authToken) {
 
 async function deleteFirestoreEventsByDate(userId, authToken, cutoffDate) {
   try {
-    if (!FIRESTORE_BASE_URL) {
-      console.warn('⚠️ Missing Firebase env config for Firestore deletion by date');
-      return;
-    }
-
-    const url = `${FIRESTORE_BASE_URL}/users/${userId}/events`;
+    const projectId = 'ai-overview-tracker-dev';
+    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${userId}/events`;
     
     const listResponse = await fetch(url, {
       headers: authToken ? { 'Authorization': `Bearer ${authToken}` } : {}
@@ -998,12 +1188,8 @@ async function deleteFirestoreEventsByDate(userId, authToken, cutoffDate) {
 
 async function deleteFirestoreEventsByType(userId, authToken, eventTypes) {
   try {
-    if (!FIRESTORE_BASE_URL) {
-      console.warn('⚠️ Missing Firebase env config for Firestore deletion by type');
-      return;
-    }
-
-    const url = `${FIRESTORE_BASE_URL}/users/${userId}/events`;
+    const projectId = 'ai-overview-tracker-dev';
+    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/users/${userId}/events`;
     
     const listResponse = await fetch(url, {
       headers: authToken ? { 'Authorization': `Bearer ${authToken}` } : {}
@@ -1035,71 +1221,24 @@ async function deleteFirestoreEventsByType(userId, authToken, eventTypes) {
 // Settings
 async function handleGetSettings() {
   const result = await chrome.storage.local.get('settings');
-  const defaults = {
+  return result.settings || {
     tracking_enabled: true,
     auto_export: false,
     data_retention_days: 90,
-    include_query_text: true,
-    search_mode_preference: DEFAULT_SEARCH_MODE_PREFERENCE
+    include_query_text: true
   };
-
-  const merged = {
-    ...defaults,
-    ...(result.settings || {})
-  };
-
-  merged.search_mode_preference = normalizeSearchModePreference(merged.search_mode_preference);
-  merged.data_retention_days = normalizeRetentionDays(merged.data_retention_days);
-
-  return merged;
-}
-
-async function broadcastSettingsUpdated(settings) {
-  try {
-    const tabs = await chrome.tabs.query({});
-    await Promise.all(
-      tabs.map((tab) => {
-        if (typeof tab.id !== 'number') {
-          return Promise.resolve();
-        }
-
-        return chrome.tabs.sendMessage(tab.id, {
-          action: 'settingsUpdated',
-          settings
-        }).catch(() => {
-          // Ignore tabs without this content script.
-        });
-      })
-    );
-  } catch (error) {
-    console.warn('⚠️ Failed to broadcast settings update:', error);
-  }
 }
 
 async function handleSaveSettings(request) {
   if (!request.settings) {
     return { success: false, error: 'No settings provided' };
   }
-
-  const incoming = request.settings;
-  const normalizedSettings = {
-    tracking_enabled: incoming.tracking_enabled !== false,
-    auto_export: incoming.auto_export === true,
-    data_retention_days: normalizeRetentionDays(incoming.data_retention_days),
-    include_query_text: incoming.include_query_text !== false,
-    search_mode_preference: normalizeSearchModePreference(incoming.search_mode_preference)
-  };
   
   await chrome.storage.local.set({
-    settings: {
-      ...normalizedSettings,
-      _updated_at: Date.now()
-    }
+    settings: request.settings
   });
-
-  await broadcastSettingsUpdated(normalizedSettings);
   
-  return { success: true, settings: normalizedSettings };
+  return { success: true };
 }
 
 // Periodic cleanup

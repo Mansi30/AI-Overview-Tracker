@@ -12,22 +12,8 @@
     DEBOUNCE_DELAY: 1000,
     SESSION_ID: generateSessionId(),
     TRACKED_QUERIES: new Set(),
-    AI_OVERVIEW_FOUND: null,
-    MODE_REDIRECT_PENDING: false,
-    AI_MODE_RETRIES: {}  // queryKey → attempt count for udm=50 retry logic
+    AI_OVERVIEW_FOUND: null
   };
-
-  const DEFAULT_SEARCH_MODE_PREFERENCE = 'all';
-  const SEARCH_MODE_TO_UDM = {
-    ai: '50',
-    no_ai: '14'
-  };
-  const RANDOM_MODE_UDM_VALUES = ['50', '14'];
-  const MODE_REDIRECT_GUARD_KEY = 'aio_mode_redirect_guard';
-  const MODE_REDIRECT_GUARD_WINDOW_MS = 4000;
-  const MODE_REDIRECT_GUARD_MAX_COUNT = 2;
-  const MODE_ENFORCED_QUERIES_KEY = 'aio_mode_enforced_queries';
-  const MODE_ENFORCED_QUERIES_MAX_ENTRIES = 50;
 
   function generateSessionId() {
     return `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -46,10 +32,6 @@
     return urlParams.get('q') || '';
   }
 
-  function isAIModeSearch() {
-    return new URLSearchParams(window.location.search).get('udm') === '50';
-  }
-
   function extractDomain(url) {
     try {
       return new URL(url).hostname;
@@ -65,232 +47,6 @@
     } catch (e) {
       return false;
     }
-  }
-
-  function normalizeSearchModePreference(value) {
-    if (value === 'ai' || value === 'no_ai') {
-      return value;
-    }
-
-    if (value === 'random') {
-      return 'random';
-    }
-
-    // Keep old saved values compatible.
-    if (value === 'all' || value === 'normal') {
-      return 'all';
-    }
-
-    return DEFAULT_SEARCH_MODE_PREFERENCE;
-  }
-
-  function selectRandomSearchModeUdm() {
-    const index = Math.floor(Math.random() * RANDOM_MODE_UDM_VALUES.length);
-    return RANDOM_MODE_UDM_VALUES[index];
-  }
-
-  function getModeRedirectGuard() {
-    try {
-      const raw = sessionStorage.getItem(MODE_REDIRECT_GUARD_KEY);
-      return raw ? JSON.parse(raw) : null;
-    } catch {
-      return null;
-    }
-  }
-
-  function setModeRedirectGuard(targetUrl) {
-    const now = Date.now();
-    const previous = getModeRedirectGuard();
-    const sameTargetRecent =
-      previous &&
-      previous.targetUrl === targetUrl &&
-      now - previous.timestamp < MODE_REDIRECT_GUARD_WINDOW_MS;
-
-    const next = {
-      targetUrl,
-      timestamp: now,
-      count: sameTargetRecent ? previous.count + 1 : 1
-    };
-
-    sessionStorage.setItem(MODE_REDIRECT_GUARD_KEY, JSON.stringify(next));
-  }
-
-  function shouldSkipModeRedirect(targetUrl) {
-    const guard = getModeRedirectGuard();
-    if (!guard) {
-      return false;
-    }
-
-    const now = Date.now();
-    return (
-      guard.targetUrl === targetUrl &&
-      now - guard.timestamp < MODE_REDIRECT_GUARD_WINDOW_MS &&
-      guard.count >= MODE_REDIRECT_GUARD_MAX_COUNT
-    );
-  }
-
-  function clearModeRedirectGuard() {
-    sessionStorage.removeItem(MODE_REDIRECT_GUARD_KEY);
-  }
-
-  function getModeEnforcedQueries() {
-    try {
-      const raw = sessionStorage.getItem(MODE_ENFORCED_QUERIES_KEY);
-      const parsed = raw ? JSON.parse(raw) : {};
-      return parsed && typeof parsed === 'object' ? parsed : {};
-    } catch {
-      return {};
-    }
-  }
-
-  function saveModeEnforcedQueries(state) {
-    try {
-      sessionStorage.setItem(MODE_ENFORCED_QUERIES_KEY, JSON.stringify(state));
-    } catch {
-      // Ignore sessionStorage quota errors.
-    }
-  }
-
-  function hasHandledQueryPreference(query, preference) {
-    if (!query) {
-      return false;
-    }
-
-    const state = getModeEnforcedQueries();
-    return Boolean(state[`${preference}::${query}`]);
-  }
-
-  function markQueryPreferenceHandled(query, preference) {
-    if (!query) {
-      return;
-    }
-
-    const state = getModeEnforcedQueries();
-    const key = `${preference}::${query}`;
-    state[key] = Date.now();
-
-    const entries = Object.entries(state);
-    if (entries.length > MODE_ENFORCED_QUERIES_MAX_ENTRIES) {
-      entries
-        .sort((a, b) => Number(a[1]) - Number(b[1]))
-        .slice(0, entries.length - MODE_ENFORCED_QUERIES_MAX_ENTRIES)
-        .forEach(([entryKey]) => {
-          delete state[entryKey];
-        });
-    }
-
-    saveModeEnforcedQueries(state);
-  }
-
-  function isGoogleSearchURL(url) {
-    try {
-      const parsed = new URL(url);
-      return (
-        (parsed.hostname === 'www.google.com' || parsed.hostname === 'google.com') &&
-        parsed.pathname === '/search'
-      );
-    } catch {
-      return false;
-    }
-  }
-
-  function computePreferredSearchUrl(currentUrl, preference) {
-    if (!isGoogleSearchURL(currentUrl)) {
-      return null;
-    }
-
-    const parsed = new URL(currentUrl);
-    if (!parsed.searchParams.get('q')) {
-      return null;
-    }
-
-    const normalizedPreference = normalizeSearchModePreference(preference);
-    const targetUdm = SEARCH_MODE_TO_UDM[normalizedPreference] || null;
-    const currentUdm = parsed.searchParams.get('udm');
-
-    if (targetUdm) {
-      if (currentUdm === targetUdm) {
-        return null;
-      }
-
-      parsed.searchParams.set('udm', targetUdm);
-      return parsed.toString();
-    }
-
-    if (normalizedPreference === 'random') {
-      if (RANDOM_MODE_UDM_VALUES.includes(currentUdm)) {
-        return null;
-      }
-
-      parsed.searchParams.set('udm', selectRandomSearchModeUdm());
-      return parsed.toString();
-    }
-
-    if (!currentUdm) {
-      return null;
-    }
-
-    parsed.searchParams.delete('udm');
-    return parsed.toString();
-  }
-
-  async function getSearchModePreference() {
-    if (!isExtensionContextValid()) {
-      return DEFAULT_SEARCH_MODE_PREFERENCE;
-    }
-
-    const maxAttempts = 3;
-
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      try {
-        const settings = await chrome.runtime.sendMessage({ action: 'getSettings' });
-        if (settings && settings.search_mode_preference) {
-          return normalizeSearchModePreference(settings.search_mode_preference);
-        }
-      } catch (error) {
-        if (attempt === maxAttempts - 1) {
-          console.warn('⚠️ Failed to read search mode preference:', error);
-        }
-      }
-
-      if (attempt < maxAttempts - 1) {
-        await new Promise((resolve) => setTimeout(resolve, 75));
-      }
-    }
-
-    return DEFAULT_SEARCH_MODE_PREFERENCE;
-  }
-
-  async function enforceSearchModePreference() {
-    const preference = await getSearchModePreference();
-    const query = getSearchQuery();
-
-    // Apply opening mode once per query so users can switch tabs manually after load.
-    if (hasHandledQueryPreference(query, preference)) {
-      CONFIG.MODE_REDIRECT_PENDING = false;
-      clearModeRedirectGuard();
-      return false;
-    }
-
-    const targetUrl = computePreferredSearchUrl(window.location.href, preference);
-    markQueryPreferenceHandled(query, preference);
-
-    if (!targetUrl) {
-      CONFIG.MODE_REDIRECT_PENDING = false;
-      clearModeRedirectGuard();
-      return false;
-    }
-
-    if (shouldSkipModeRedirect(targetUrl)) {
-      console.warn('⚠️ Skipping repeated mode redirect to avoid loop');
-      CONFIG.MODE_REDIRECT_PENDING = false;
-      return false;
-    }
-
-    CONFIG.MODE_REDIRECT_PENDING = true;
-    setModeRedirectGuard(targetUrl);
-    window.location.replace(targetUrl);
-    return true;
   }
 
   // ==================== VISIBILITY CHECK ====================
@@ -413,75 +169,8 @@
     return null;
   }
 
-  // ==================== AI MODE DETECTION (udm=50) ====================
-
-  function findAIModeContainer() {
-    console.log('🔍 Searching for AI Mode response container (udm=50)...');
-
-    const isExternalLink = (link) => {
-      const domain = extractDomain(link.href);
-      return domain &&
-             !domain.endsWith('google.com') &&
-             !link.href.startsWith('javascript:') &&
-             !link.href.startsWith('#') &&
-             !link.href.startsWith('about:');
-    };
-
-    // First check whether any external links exist at all — if not,
-    // the AI response simply hasn't streamed in yet.
-    const pageExternalLinks = Array.from(document.querySelectorAll('a[href]')).filter(isExternalLink);
-    if (pageExternalLinks.length === 0) {
-      console.log('⏳ No external citation links on page yet');
-      return null;
-    }
-
-    // Strategy 1: try known Google search result wrapper selectors.
-    // AI Mode may not have #rso / #center_col, but try anyway.
-    const specificSelectors = ['#rso', '#center_col', '#search', '[role="main"]', 'main', '#rcnt'];
-    for (const sel of specificSelectors) {
-      const el = document.querySelector(sel);
-      if (!el || !isElementVisible(el)) continue;
-      const extLinks = Array.from(el.querySelectorAll('a[href]')).filter(isExternalLink);
-      if (extLinks.length >= 1) {
-        console.log(`✅ AI Mode container found via "${sel}" (${extLinks.length} links)`);
-        el.setAttribute('data-ai-overview-container', 'true');
-        return el;
-      }
-    }
-
-    // Strategy 2: broad scan — find the visible element with the most external
-    // citation links that isn't the full-page body/html root.
-    let bestEl = null;
-    let bestCount = 0;
-
-    document.querySelectorAll('div, section, article').forEach(el => {
-      if (el === document.body || el === document.documentElement) return;
-      if (!isElementVisible(el)) return;
-
-      const extLinks = Array.from(el.querySelectorAll('a[href]')).filter(isExternalLink);
-      if (extLinks.length > bestCount) {
-        bestCount = extLinks.length;
-        bestEl = el;
-      }
-    });
-
-    if (bestEl) {
-      console.log(`✅ AI Mode container found via broad scan (${bestCount} citation links)`);
-      bestEl.setAttribute('data-ai-overview-container', 'true');
-      return bestEl;
-    }
-
-    console.log('⏳ AI Mode container not ready yet');
-    return null;
-  }
-
   // ==================== ENHANCED DATA EXTRACTION ====================
-
-  function classifyOutletType(url) {
-    // Treat domains ending in .id (Indonesian TLD) as local, everything else as global
-    return /\.id(\/|$)/.test(url) ? 'local' : 'global';
-  }
-
+  
   function extractCitations(aiOverviewContainer) {
     const citations = [];
     const seenUrls = new Set();
@@ -511,8 +200,7 @@
           position: citations.length + 1,
           text: link.textContent.trim() || link.getAttribute('aria-label') || '',
           title: link.getAttribute('title') || '',
-          outlet_type: classifyOutletType(href),
-
+          
           // Click tracking
           clicked: false,
           click_timestamp: null,
@@ -651,26 +339,14 @@
     }
 
     try {
-      const response = await chrome.runtime.sendMessage({
+      await chrome.runtime.sendMessage({
         action: 'storeEvent',
         data: eventData
       });
-
-      if (response && response.success) {
-        if (response.firestore_synced) {
-          console.log('✅ Event stored and synced:', eventData.event_type);
-        } else {
-          console.warn('⚠️ Event stored locally only:', eventData.event_type, response.firestore_reason || 'unknown_reason');
-        }
-        return;
-      }
-
-      console.warn('⚠️ Event rejected:', eventData.event_type, response && response.reason ? response.reason : 'unknown_reason');
+      console.log('✅ Event stored:', eventData.event_type);
     } catch (e) {
       if (e.message.includes('Extension context invalidated')) {
         console.warn('⚠️ Extension context lost. Refresh page.');
-      } else {
-        console.error('❌ Failed to store event:', eventData.event_type, e);
       }
     }
   }
@@ -821,6 +497,21 @@
             // Await tracking to increase chance it reaches the extension before navigation
             await trackCitationClick(citation, query, timeToClick);
 
+            // 🆕 NEW: Start journey tracking for this citation
+            try {
+              chrome.runtime.sendMessage({
+                action: 'startJourney',
+                session_id: CONFIG.SESSION_ID,
+                query: query,
+                citation_url: href,
+                citation_domain: citation.domain,
+                citation_position: citation.position
+              });
+              console.log('🗺️ Journey tracking started for:', citation.domain);
+            } catch (journeyErr) {
+              console.warn('⚠️ Journey tracking failed (non-fatal):', journeyErr);
+            }
+
             // Mark citation as clicked in the in-memory data so UI updates immediately
             try {
               citation.clicked = true;
@@ -887,10 +578,6 @@
   // ==================== MAIN DETECTION ====================
   
   async function detectAndTrackAIOverviews() {
-    if (CONFIG.MODE_REDIRECT_PENDING) {
-      return;
-    }
-
     const query = getSearchQuery();
     
     if (!query) {
@@ -909,47 +596,18 @@
     console.log(`🔍 Search: "${query}"`);
     console.log('═══════════════════════════════════════');
 
-    const aiModeActive = isAIModeSearch();
+    CONFIG.TRACKED_QUERIES.add(queryKey);
 
-    // For AI Mode (udm=50), defer adding to TRACKED_QUERIES until we either
-    // find the container or exhaust retries, so the mutation observer can retry.
-    if (!aiModeActive) {
-      CONFIG.TRACKED_QUERIES.add(queryKey);
-    }
-
-    let aiOverviewContainer = findAIOverviewContainer();
-
-    if (!aiOverviewContainer && aiModeActive) {
-      aiOverviewContainer = findAIModeContainer();
-    }
+    const aiOverviewContainer = findAIOverviewContainer();
 
     if (aiOverviewContainer) {
-      CONFIG.TRACKED_QUERIES.add(queryKey); // mark done (also handles AI Mode case)
-      console.log(aiModeActive ? '🎯 AI MODE DETECTED ✅' : '🎯 AI OVERVIEW DETECTED ✅');
+      console.log('🎯 AI OVERVIEW DETECTED ✅');
       CONFIG.AI_OVERVIEW_FOUND = aiOverviewContainer;
-
+      
       const citations = await trackAIOverviewShown(aiOverviewContainer, query);
       setupClickTracking(aiOverviewContainer, citations, query);
-
+      
       console.log('═══════════════════════════════════════');
-    } else if (aiModeActive) {
-      // Response not rendered yet — increment retry count and let the
-      // mutation observer trigger another attempt (up to 8 tries ≈ 24 s).
-      // Key retries by query text only (not full URL) so the udm=50 redirect
-      // changing the URL doesn't reset the counter.
-      const retries = (CONFIG.AI_MODE_RETRIES[query] || 0) + 1;
-      CONFIG.AI_MODE_RETRIES[query] = retries;
-
-      if (retries >= 8) {
-        console.log('⚠️ AI Mode: max retries reached, recording with available citations');
-        CONFIG.TRACKED_QUERIES.add(queryKey);
-        CONFIG.AI_OVERVIEW_FOUND = true;
-        await trackAIOverviewShown(document.createElement('div'), query);
-        console.log('═══════════════════════════════════════');
-      } else {
-        console.log(`⏳ AI Mode: container not ready (attempt ${retries}/8), will retry on next DOM change`);
-        // Leave queryKey out of TRACKED_QUERIES so mutation observer retries.
-      }
     } else {
       console.log('📭 NO AI OVERVIEW ❌');
       CONFIG.AI_OVERVIEW_FOUND = null;
@@ -963,10 +621,6 @@
   let detectionTimeout;
   
   function scheduleDetection() {
-    if (CONFIG.MODE_REDIRECT_PENDING) {
-      return;
-    }
-
     clearTimeout(detectionTimeout);
     detectionTimeout = setTimeout(detectAndTrackAIOverviews, 2000);
   }
@@ -997,40 +651,12 @@
         
         CONFIG.TRACKED_QUERIES.clear();
         CONFIG.AI_OVERVIEW_FOUND = null;
-        CONFIG.AI_MODE_RETRIES = {};
-
-        enforceSearchModePreference().then((redirected) => {
-          if (!redirected) {
-            scheduleDetection();
-          }
-        });
+        
+        scheduleDetection();
       }
     });
 
     urlObserver.observe(document, { subtree: true, childList: true });
-  }
-
-  function observeSettingsUpdates() {
-    if (!isExtensionContextValid()) {
-      return;
-    }
-
-    chrome.runtime.onMessage.addListener((message) => {
-      if (!message || message.action !== 'settingsUpdated') {
-        return;
-      }
-
-      CONFIG.MODE_REDIRECT_PENDING = false;
-      CONFIG.AI_MODE_RETRIES = {};
-      clearModeRedirectGuard();
-      saveModeEnforcedQueries({});
-
-      enforceSearchModePreference().then((redirected) => {
-        if (!redirected) {
-          scheduleDetection();
-        }
-      });
-    });
   }
 
   // Inject lightweight styles for clicked citation UI feedback
@@ -1077,25 +703,14 @@
     console.log('═══════════════════════════════════════');
     
     if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', () => {
-        enforceSearchModePreference().then((redirected) => {
-          if (!redirected) {
-            scheduleDetection();
-          }
-        });
-      });
+      document.addEventListener('DOMContentLoaded', scheduleDetection);
     } else {
-      enforceSearchModePreference().then((redirected) => {
-        if (!redirected) {
-          scheduleDetection();
-        }
-      });
+      scheduleDetection();
     }
 
     observeDOMChanges();
     observeURLChanges();
-    observeSettingsUpdates();
-    injectCitationStyles();
+  injectCitationStyles();
     
     window.addEventListener('beforeunload', cleanup);
   }
