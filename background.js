@@ -116,11 +116,6 @@ async function initializeStorage() {
 
 // ==================== LLM TOPIC CLASSIFICATION ====================
 
-// Firebase Cloud Function endpoint (keeps API key secure on backend).
-// If not configured/deployed for your project, we return { topic: 'general' }
-// so the content script's keyword fallback runs.
-const CLASSIFY_FUNCTION_URL = '';
-
 // Exchange refreshToken for a fresh idToken using Secure Token API
 async function attemptRefreshAndStore(refreshToken) {
   if (!refreshToken) return null;
