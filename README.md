@@ -21,7 +21,7 @@ AI Overview Tracker is a Chrome extension for researchers, SEO professionals, an
 
 ## Setup
 
-This extension connects to a shared Firebase project. Credentials are provided by Adrian.
+The extension requires a Firebase project. You can either connect to your own or use the shared team project — contact Adrian for credentials.
 
 ### Prerequisites
 
@@ -33,7 +33,7 @@ This extension connects to a shared Firebase project. Credentials are provided b
 1. **Clone the repo**
 
    ```bash
-   git clone https://github.com/AdrianHagen/AI-Overview-Tracker.git
+   git clone https://github.com/Mansi30/AI-Overview-Tracker.git
    cd AI-Overview-Tracker
    ```
 
@@ -51,7 +51,6 @@ This extension connects to a shared Firebase project. Credentials are provided b
    | `FIREBASE_WEB_API_KEY` | Yes | Firebase Web API key (used for Identity Toolkit auth) |
    | `FIREBASE_REGION` | No | Cloud Functions region (default: `us-central1`) |
    | `CLASSIFY_FUNCTION_NAME` | No | Cloud Function name for topic classification (default: `classifyTopic`) |
-   | `DASHBOARD_URL` | No | Dashboard URL shown in the options UI |
 
 3. **Generate the runtime config**
 
@@ -68,18 +67,16 @@ This extension connects to a shared Firebase project. Credentials are provided b
    - Click **Load unpacked** and select the project folder
    - Pin the extension from the puzzle icon if you want it in the toolbar
 
-5. **Create an account on the dashboard**
+5. **Sign in to Firebase**
 
-   - Open the dashboard URL (found in your `.env` or ask Adrian)
-   - Sign up with your email via Firebase Authentication
+   When the authentication window appears, sign in with your Firebase Credentials account. Your Google account must be added to the Firebase project first, either [the team project](https://console.firebase.google.com/project/uma-prodev/overview) or your own. If you don't have access, ask the team to add you. Then choose an application-specific password.
 
 6. **Verify it works**
 
    - Do a Google Search that triggers an AI Overview
    - Check the Firestore console or dashboard to confirm a record was created
-   - If you see `http_403`, contact Adrian to confirm your account has been granted Firestore access
 
-> **Reloading after changes:** Any time you edit source files or regenerate `env.js`, go to `chrome://extensions` and click **Reload** on the extension card.
+> **After making changes:** Any time you edit source files or regenerate `env.js`, go to `chrome://extensions` and click **Reload** on the extension card.
 
 ---
 
@@ -124,19 +121,10 @@ Refresh the Google Search page after loading or reloading the extension. The con
 Confirm you're signed in with the same email on both the extension and dashboard. Check your browser console on a search page for errors.
 
 **`http_403` errors**
-Your Firebase account may not have Firestore read/write access yet. Contact Adrian.
+Your Firebase account may not have Firestore read/write access yet.
 
 **`env.js` missing errors in the console**
 You haven't run `node scripts/generate-env.mjs` yet, or you ran it before creating `.env`.
-
----
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/my-change`)
-3. Commit your changes
-4. Open a Pull Request against `main`
 
 ---
 
