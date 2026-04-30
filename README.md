@@ -80,6 +80,21 @@ The extension requires a Firebase project. You can either connect to your own or
 
 ---
 
+## Search Modes
+
+The extension controls which version of Google Search opens when you run a query. Configure this under **Settings → Search Opening Mode**.
+
+| Mode | Label in UI | What it does |
+|---|---|---|
+| `all` | All (Regular) | Default. Leaves Google's URL untouched — you see whatever Google would normally show. |
+| `ai` | Always AI | Appends `udm=50` to every search URL, forcing Google into AI Overview mode. Use this when you want to study AI Overviews consistently. |
+| `no_ai` | Always Non-AI (Web) | Appends `udm=14` to every search URL, suppressing AI Overviews and showing the classic web results tab. Use this as a control group. |
+| `random` | Random (AI or Web) | Randomly picks `udm=50` or `udm=14` on each search. Useful for collecting a naturally mixed dataset without manual switching. |
+
+**How to change the mode:** Open the extension popup → click the settings icon → go to the **Tracking Settings** section → select the mode from the **Search Opening Mode** dropdown → click **Save Settings**.
+
+---
+
 ## File Structure
 
 ```
