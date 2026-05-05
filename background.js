@@ -983,7 +983,8 @@ async function syncToFirestore(eventData) {
     const ts = new Date(eventData.timestamp).toISOString().replace(/[:.]/g, '-').slice(0, 19);
     const docId = `${ts}_${eventData.event_type}_${querySlug}`;
 
-    const collection = query_language || 'events';
+    const alwaysInEvents = eventData.event_type === 'navigation_journey' || eventData.event_type === 'citation_dwelled';
+    const collection = alwaysInEvents ? 'events' : (query_language || 'events');
     const url = `${FIRESTORE_BASE_URL}/users/${finalUserId}/${collection}/${encodeURIComponent(docId)}`;
 
     const payload = {
